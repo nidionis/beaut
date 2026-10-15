@@ -1,0 +1,5 @@
+BEAUT_BIN=/home/painpain/beaut
+BEAUT_WORKERS=3
+BEAUT_CORES=0 1 2
+BEAUT_ROLE=orchestrator
+BEAUT_ORCH_IP=192.168.8.240
