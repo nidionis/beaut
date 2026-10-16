@@ -74,7 +74,7 @@ ORCH_IP="$(resolve_orch)"
 log "orchestrator = $ORCH_IP"
 case "$ROLE" in orchestrator|router|worker|client) : ;; *) die "unknown role: $ROLE" ;; esac
 
-log "layers 2 + 1"
+log "installing"
 bash "$HERE/env.sh" "$ROLE" "$ORCH_IP"
 [ -f "$HERE/.deploy-state" ] && . "$HERE/.deploy-state"
 

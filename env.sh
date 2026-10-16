@@ -14,8 +14,8 @@ ENV_DIR="${ENV_DIR:-/etc/beaut}"; STATE_DIR="${STATE_DIR:-/var/lib/beaut}"
 SU="${SERVICE_USER:-beaut}"; SG="${SERVICE_GROUP:-beaut}"
 CONF="$ENV_DIR/beaut.conf"; SECRET="$ENV_DIR/beaut.env"
 
-# ── 1. build layer (chain) ─────────────────────────────────
-log "layer 1: build"
+# ── 1. build ────────────────────────────────────────────────
+log "building"
 bash "$HERE/build.sh"
 
 # ── 2. identity ────────────────────────────────────────────
@@ -234,7 +234,7 @@ chmod 0440 "$SUDOERS"
 visudo -cf "$SUDOERS" >/dev/null || die "invalid sudoers drop-in"
 log "sudoers: $SUDOERS"
 
-# hand the built binaries to the installer (layer 3)
+# hand the built binaries to the installer
 printf 'BEAUT_BIN=%s\nBEAUT_WORKERS=%s\nBEAUT_CORES=%s\nBEAUT_ROLE=%s\nBEAUT_ORCH_IP=%s\n' \
   "$HERE" "$WORKERS" "${CORES[*]:-}" "$ROLE" "$ORCH_IP" > "$HERE/.deploy-state"
-log "layer 2 done"
+log "env done"
