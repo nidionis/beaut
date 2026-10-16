@@ -72,8 +72,8 @@ static int priv_load(void) {
         tsointsoin_decode(dec, line);
         char *fld[3];
         if (split_fields(dec, SEP_FIELD, fld, 3) < 3) continue;
-        strncpy(PT[PTn].id, fld[0], sizeof(PT[0].id) - 1);
-        strncpy(PT[PTn].pk, fld[1], sizeof(PT[0].pk) - 1);
+        strncpy(PT[PTn].id, fld[0], sizeof(PT[PTn].id) - 1);
+        strncpy(PT[PTn].pk, fld[1], sizeof(PT[PTn].pk) - 1);
         PT[PTn].level = atoi(fld[2]);
         PTn++;
     }

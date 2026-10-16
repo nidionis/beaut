@@ -1,2 +1,0 @@
-BEAUT_ARCH=aarch64
-BEAUT_CFLAGS=-O2 -march=armv8-a+crypto

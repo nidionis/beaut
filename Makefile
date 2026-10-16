@@ -1,6 +1,6 @@
-CC      = gcc
-CFLAGS  = -O2 -march=armv8-a+crypto -Wall -Wextra -Isrc
-LDLIBS  = -lsodium
+CC      ?= gcc
+CFLAGS  ?= -O2 -Wall -Wextra -Isrc
+LDLIBS  ?= -lsodium
 
 all: beaut-tool beaut-router
 
