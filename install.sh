@@ -76,7 +76,7 @@ case "$ROLE" in orchestrator|router|worker|client) : ;; *) die "unknown role: $R
 
 log "layers 2 + 1"
 bash "$HERE/env.sh" "$ROLE" "$ORCH_IP"
-. "$HERE/.deploy-state"
+[ -f "$HERE/.deploy-state" ] && . "$HERE/.deploy-state"
 
 log "installing binaries"
 install -m 0755 "$BEAUT_BIN/beaut-tool" "$BIN_DIR/beaut-tool"
