@@ -1,6 +1,6 @@
-#include "tsointsoin.h"
+#include "steg_hide.h"
 #include <string.h>
-void tsointsoin_encode(char *out, const char *in) {
+void steg_hide_encode(char *out, const char *in) {
     size_t i;
     for (i = 0; in[i]; i++) {
         char c = in[i];
@@ -10,4 +10,4 @@ void tsointsoin_encode(char *out, const char *in) {
     }
     out[i] = 0;
 }
-void tsointsoin_decode(char *out, const char *in) { tsointsoin_encode(out, in); }
+void steg_hide_decode(char *out, const char *in) { steg_hide_encode(out, in); }

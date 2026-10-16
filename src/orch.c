@@ -1,6 +1,6 @@
 #include "crypt.h"
 #include "ft.h"
-#include "tsointsoin.h"
+#include "steg_hide.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -69,7 +69,7 @@ static int priv_load(void) {
     PTn = 0;
     while (fgets(line, sizeof(line), f) && PTn < 256) {
         line[strcspn(line, "\n")] = 0;
-        tsointsoin_decode(dec, line);
+        steg_hide_decode(dec, line);
         char *fld[3];
         if (split_fields(dec, SEP_FIELD, fld, 3) < 3) continue;
         strncpy(PT[PTn].id, fld[0], sizeof(PT[PTn].id) - 1);
@@ -220,7 +220,7 @@ static void c_join(char **a) {
     sodium_memzero(key, sizeof(key));
     char line[PRIV_LINE_MAX], enc[PRIV_LINE_MAX];
     snprintf(line, sizeof(line), "%s%c%s%c%d", id, SEP_FIELD, pkhex, SEP_FIELD, (int)time(NULL));
-    tsointsoin_encode(enc, line);
+    steg_hide_encode(enc, line);
     FILE *f = fopen(PENDP, "a");
     if (!f) { fprintf(stderr, "cannot open %s\n", PENDP); exit(1); }
     fprintf(f, "%s\n", enc); fclose(f);
@@ -233,13 +233,13 @@ static int c_approve(char **a) {
     int found = 0;
     while (fgets(line, sizeof(line), p)) {
         line[strcspn(line, "\n")] = 0;
-        tsointsoin_decode(dec, line);
+        steg_hide_decode(dec, line);
         char *fld[3];
         if (split_fields(dec, SEP_FIELD, fld, 3) < 3) continue;
         if (strcmp(fld[0], a[2]) != 0) continue;
         char out[PRIV_LINE_MAX], enc[PRIV_LINE_MAX];
         snprintf(out, sizeof(out), "%s%c%s%c%s", fld[0], SEP_FIELD, fld[1], SEP_FIELD, a[3]);
-        tsointsoin_encode(enc, out);
+        steg_hide_encode(enc, out);
         FILE *ap = fopen(PRIVP, "a");
         if (!ap) { fclose(p); return 1; }
         fprintf(ap, "%s\n", enc); fclose(ap);
@@ -251,8 +251,8 @@ static int c_approve(char **a) {
 static void c_auth(char **a) { int l = auth(a[0]); printf("%d\n", l); exit(l > 0 ? 0 : 1); }
 static void c_cores(char **a) { (void)a; printf("%d\n", cores()); }
 static void c_role(char **a) { (void)a; printf("%s cores=%d\n", is_router() ? "router" : "worker", cores()); }
-static void c_encode(char **a) { char o[PRIV_LINE_MAX + 8]; tsointsoin_encode(o, a[0]); printf("%s\n", o); }
-static void c_decode(char **a) { char o[PRIV_LINE_MAX + 8]; tsointsoin_decode(o, a[0]); printf("%s\n", o); }
+static void c_encode(char **a) { char o[PRIV_LINE_MAX + 8]; steg_hide_encode(o, a[0]); printf("%s\n", o); }
+static void c_decode(char **a) { char o[PRIV_LINE_MAX + 8]; steg_hide_decode(o, a[0]); printf("%s\n", o); }
 static void c_post(char **a) { unsigned char k[KEY_BYTES]; derive(k, a[4]); int rc = log_post(a[1], a[2], a[3], k); sodium_memzero(k, sizeof(k)); if (rc) exit(1); }
 static void c_read(char **a) { unsigned char k[KEY_BYTES]; derive(k, a[2]); static char buf[65536]; int n = log_read(atoi(a[1]), buf, sizeof(buf), k); sodium_memzero(k, sizeof(k)); if (n > 0) fputs(buf, stdout); fprintf(stderr, "%d\n", n); }
 static void c_peers(char **a) { static peer_t p[256]; unsigned char k[KEY_BYTES]; derive(k, a[1]); int n = peers_scan(p, 256, k); sodium_memzero(k, sizeof(k)); for (int i = 0; i < n; i++) printf("%s\t%s\t%.1f\t%d\n", p[i].name, p[i].ip, p[i].load, p[i].cores); }
