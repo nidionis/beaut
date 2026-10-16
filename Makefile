@@ -4,7 +4,7 @@ LDLIBS  ?= -lsodium
 
 all: beaut-tool beaut-router
 
-beaut-tool: src/orch.c src/crypt.c src/ft.c src/steg_hide.c
+beaut-tool: src/orch.c src/crypt.c src/ft.c src/steg_hide.c src/cfg.c src/sched.c src/logstore.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 beaut-router: src/router.c src/ft.c

@@ -190,7 +190,7 @@ User=$SU
 Group=$SG
 CPUAffinity=$cpu
 Nice=5
-ExecStart=/bin/sh -c 'while :; do sleep 3600; done'
+ExecStart=$BIN_DIR/beaut watch
 $HARDEN
 
 [Install]

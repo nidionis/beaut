@@ -7,6 +7,7 @@
 #define BEAUT_NAME_MAX 128
 #define IP_MAX 64
 #define ACTION_MAX 64
+#define P_HEARTBEAT "heartbeat"
 #define TS_STR_MAX 16
 #define LOAD_STR_MAX 16
 #define LEVEL_STR_MAX 4
