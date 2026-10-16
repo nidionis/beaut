@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# 02-env.sh — layer 2: identity, tree, config, runtime scripts. Calls 01-build.sh.
+# env.sh — identity, tree, config, runtime scripts. Calls build.sh.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 log() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "run as root"
 
-ROLE="${1:?usage: 02-env.sh <orchestrator|router|worker|client> [ORCHESTRATOR_IP]}"
+ROLE="${1:?usage: env.sh <orchestrator|router|worker|client> [ORCHESTRATOR_IP]}"
 ORCH_IP="${2:-${ORCHESTRATOR_IP:-}}"
 PREFIX="${PREFIX:-/usr/local}"
 BIN_DIR="$PREFIX/bin"; LIB_DIR="$PREFIX/lib/beaut"
@@ -16,7 +16,7 @@ CONF="$ENV_DIR/beaut.conf"; SECRET="$ENV_DIR/beaut.env"
 
 # ── 1. build layer (chain) ─────────────────────────────────
 log "layer 1: build"
-bash "$HERE/01-build.sh" ${BEAUT_FORCE_BUILD:+--force}
+bash "$HERE/build.sh"
 
 # ── 2. identity ────────────────────────────────────────────
 log "user/group"
@@ -226,7 +226,7 @@ chmod 0755 "$BIN_DIR/beaut-signup" "$BIN_DIR/beaut-approve" "$BIN_DIR/beaut-ban"
 # ── 8. sudoers: group can drive beaut without a password ───
 SUDOERS="/etc/sudoers.d/beaut"
 cat > "$SUDOERS" <<EOF
-# managed by 02-env.sh — members of $SG run beaut without a password
+# managed by env.sh — members of $SG run beaut without a password
 %$SG ALL=(root) NOPASSWD: $BIN_DIR/beaut, $BIN_DIR/beaut-tool, $BIN_DIR/beaut-signup
 %$SG ALL=(root) NOPASSWD: /usr/bin/systemctl status beaut-*, /usr/bin/journalctl -u beaut-*
 EOF
