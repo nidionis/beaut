@@ -78,10 +78,12 @@ set_kv "$CONF" ROUTER_PORT "${ROUTER_PORT:-7700}"
 # exec is OFF by default — see the note at the bottom
 set_kv "$CONF" BEAUT_ALLOW_EXEC "${BEAUT_ALLOW_EXEC:-0}"
 set_kv "$CONF" BEAUT_EXEC_DOMAINS "${BEAUT_EXEC_DOMAINS:-}"
-case "$ROLE" in orchestrator) : ;; *)
-  [ -n "$ORCH_IP" ] || die "$ROLE needs ORCHESTRATOR_IP"
-  set_kv "$CONF" ORCHESTRATOR_IP "$ORCH_IP" ;;
+case "$ROLE" in
+  orchestrator) set_kv "$CONF" ORCHESTRATOR_IP "127.0.0.1" ;;
+  *) [ -n "$ORCH_IP" ] || die "$ROLE needs ORCHESTRATOR_IP"
+     set_kv "$CONF" ORCHESTRATOR_IP "$ORCH_IP" ;;
 esac
+
 if [ -n "${BEAUT_PASSWORD:-}" ]; then
   set_kv "$SECRET" BEAUT_PASSWORD "$BEAUT_PASSWORD"
   chmod 0600 "$SECRET"; chown root:root "$SECRET"

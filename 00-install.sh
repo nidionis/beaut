@@ -22,6 +22,10 @@ do_serve() {
   ( cd "$d" && sha256sum beaut.tgz > beaut.tgz.sha256 )
   chmod 644 "$d"/*
   ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  echo "$ip" > "$d/orch.host"
+  cp "$HERE/00-install.sh" "$HERE/01-build.sh" "$HERE/02-env.sh" "$d/"
+  tar czf "$d/beaut.tgz" -C "$d" 00-install.sh 01-build.sh 02-env.sh orch.host
+  ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
   log "serving on :$port — sha256 $(cut -d' ' -f1 "$d/beaut.tgz.sha256" | cut -c1-16)…"
   cat <<EOT
 
@@ -61,7 +65,16 @@ esac
 
 # ── install path ───────────────────────────────────────────
 [ "$(id -u)" = 0 ] || die "run as root: sudo $0 $*"
+# orchestrator IP: explicit arg > env > host we were served from > self
+resolve_orch() {
+  if [ "$ROLE" = orchestrator ]; then echo "127.0.0.1"; return; fi
+  [ -n "${ORCH_IP:-}" ]          && { echo "$ORCH_IP"; return; }
+  [ -f "$HERE/orch.host" ]       && { cat "$HERE/orch.host"; return; }
+  die "no orchestrator IP — pass it as arg 2, or deploy from a --serve tarball"
+}
 ROLE="$1"; ORCH_IP="${2:-${ORCHESTRATOR_IP:-}}"
+ORCH_IP="$(resolve_orch)"
+log "orchestrator = $ORCH_IP"
 case "$ROLE" in orchestrator|router|worker|client) : ;; *) die "unknown role: $ROLE" ;; esac
 
 log "layers 2 + 1"
