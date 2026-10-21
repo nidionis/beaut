@@ -6,6 +6,7 @@
 #   sudo ./install.sh --serve [PORT]   publish bootstrap tarball (curl | bash)
 #   sudo ./install.sh --status         show systemd status
 #   sudo ./install.sh --uninstall      remove systemd units
+#   sudo ./install.sh deploy [TARGET]  deploy to ORCHESTRATOR / ROUTER / DOMAIN via ssh
 #   ./install.sh --help                show this help
 #
 # Config file: config.env  (mandatory: BEAUT_PASSWORD, ROLE)
@@ -118,10 +119,118 @@ do_uninstall() {
   log "units removed — state kept in $STATE_DIR"
 }
 
+# ── helpers: local non-127 IP (RFC1918 preferred) ──────────────────────────
+detect_local_ip() {
+  # first non-loopback IPv4 address (typically 192.168.x / 10.x / 172.16-31.x)
+  ip -4 addr show 2>/dev/null \
+    | awk '/inet /{print $2}' | cut -d/ -f1 \
+    | grep -v '^127\.' | head -1 || true
+}
+
+is_local() {
+  local ip="$1"
+  [ "$ip" = "127.0.0.1" ] || [ "$ip" = "localhost" ] && return 0
+  return 1
+}
+
+# ── deploy: push + install on ORCHESTRATOR / ROUTER / DOMAIN via ssh ──────
+do_deploy() {
+  local target="${1:-}"
+  [ "$(id -u)" = 0 ] || die "run as root: sudo $0 deploy [TARGET]"
+
+  # load config for remote targets (non-fatal if missing)
+  if [ -f config.env ]; then . config.env; fi
+
+  local local_ip; local_ip="$(detect_local_ip)"
+  [ -n "$local_ip" ] || local_ip="127.0.0.1"
+
+  # build the target list
+  local targets=()
+  [ -n "$target" ]        && targets+=("$target")
+  [ -n "${IP_ORCHESTRATOR:-}" ] && targets+=("$IP_ORCHESTRATOR")
+  [ -n "${IP_ROUTER:-}" ]   && targets+=("$IP_ROUTER")
+  [ -n "${IP_DOMAIN:-}" ]   && targets+=("$IP_DOMAIN")
+
+  # de-duplicate
+  local uniq=()
+  for t in "${targets[@]}"; do
+    local skip=0
+    for u in "${uniq[@]}"; do [ "$u" = "$t" ] && skip=1; done
+    [ "$skip" = 0 ] && uniq+=("$t")
+  done
+  targets=("${uniq[@]}")
+
+  if [ "${#targets[@]}" -eq 0 ]; then
+    log "no remote target (ORCHESTRATOR/ROUTER/DOMAIN) configured"
+    log "-> deploying on localhost (${local_ip})"
+    do_install "${ROLE:-orchestrator}" "$local_ip"
+    return 0
+  fi
+
+  # ── build a deploy tarball ─────────────────────────────────────────────
+  local d; d="$(mktemp -d)"
+  mkdir -p "$d/scripts" "$d/templates"
+  cp install.sh config.env "$d/"
+  cp -r scripts/. "$d/scripts/"
+  cp -r templates/. "$d/templates/"
+  tar czf "$d/beaut.tgz" -C "$d" install.sh config.env scripts templates
+  local tarball="$d/beaut.tgz"
+  log "deploy package ready: $(du -h "$tarball" | awk '{print $1}')"
+
+  local ok=0 fail=0
+  for t in "${targets[@]}"; do
+    echo
+    log "━━━ deploying to $t ━━━"
+    if is_local "$t"; then
+      info "$t is local — installing directly"
+      do_install "${ROLE:-orchestrator}" "$local_ip"
+      ok=$((ok + 1))
+      continue
+    fi
+
+    # check ssh reachability
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=5 "$t" true 2>/dev/null; then
+      warn "ssh to $t unreachable — installing on localhost (${local_ip}) instead"
+      do_install "${ROLE:-orchestrator}" "$local_ip"
+      ok=$((ok + 1))
+      continue
+    fi
+
+    # copy tarball via scp (sftp fallback)
+    info "copying package to $t ..."
+    if ! scp -q "$tarball" "${t}:~/beaut.tgz" 2>/dev/null; then
+      warn "scp to $t failed — trying sftp"
+      echo "put $tarball ~/beaut.tgz" | sftp -q "$t" >/dev/null 2>&1 \
+        || { warn "scp/sftp to $t failed — installing on localhost instead"; do_install "${ROLE:-orchestrator}" "$local_ip"; ok=$((ok + 1)); continue; }
+    fi
+
+    # remote install via ssh
+    info "running install on $t ..."
+    if ssh -t "$t" "tar xzf ~/beaut.tgz && cd ~ && sudo ./install.sh --role ${ROLE:-orchestrator} $t" 2>/dev/null; then
+      log "✓ $t deployed"
+      ok=$((ok + 1))
+    else
+      warn "remote install on $t failed — installing on localhost (${local_ip}) instead"
+      do_install "${ROLE:-orchestrator}" "$local_ip"
+      ok=$((ok + 1))
+    fi
+  done
+
+  rm -rf "$d"
+
+  echo
+  if [ "$fail" -eq 0 ]; then
+    log "deploy complete — ${ok} target(s) installed"
+  else
+    warn "deploy finished with ${fail} failure(s), ${ok} success(es)"
+  fi
+}
+
 case "${1:-}" in
   --serve)   shift; do_serve "$@" ;;
   --status)  do_status ;;
   --uninstall) do_uninstall ;;
+  deploy)    shift; do_deploy "$@" ;;
   --role)
     shift
     [ "$#" -ge 1 ] || die "usage: $0 --role ROLE [ORCH_IP]"
