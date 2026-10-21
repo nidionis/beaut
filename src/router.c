@@ -1,4 +1,5 @@
 #include "ft.h"
+#include "router.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,7 +16,7 @@ static void pump(int from, int to) {
         while (o < r) { ssize_t w = write(to, buf + o, (size_t)(r - o)); if (w <= 0) break; o += w; }
     }
 }
-int main(int argc, char **argv) {
+int router_run(int argc, char **argv) {
     const char *bind_addr = env_str("ROUTER_LISTEN", "0.0.0.0");  /* never name it "listen" */
     int lport = env_int("ROUTER_PORT", 443);
     const char *orch = env_str("ORCHESTRATOR_IP", "127.0.0.1");

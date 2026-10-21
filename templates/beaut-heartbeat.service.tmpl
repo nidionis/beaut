@@ -1,0 +1,9 @@
+[Unit]
+Description=Beaut heartbeat
+[Service]
+Type=oneshot
+User=@SU@
+Group=@SG@
+EnvironmentFile=@CONF@
+ExecStart=@BIN_DIR@/beaut heartbeat
+@HARDEN@

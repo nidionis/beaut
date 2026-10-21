@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -uo pipefail
+. @LIB_DIR@/beaut-lib
+need_pw
+E="@BEAUT_ETC_DIR@"
+"$T" join "$E/pending.tsv" "$BEAUT_PASSWORD"
+echo "ask an admin: sudo beaut-approve <id> <level>"

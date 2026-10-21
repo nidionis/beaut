@@ -1,0 +1,16 @@
+# shared shell helpers — sourced by every beaut script
+CONF="@BEAUT_CONF@"
+SECRET="@BEAUT_SECRET@"
+[ -r "$CONF" ] && . "$CONF"
+[ -r "$SECRET" ] && . "$SECRET"
+T="@BEAUT_TOOL@"
+LOG="@BEAUT_STATE_DIR@/log.enc"
+me=$(hostname -s)
+myip() {
+  ip -4 addr show "@BEAUT_IF@" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -1
+}
+need_pw() { : "${BEAUT_PASSWORD:?BEAUT_PASSWORD unset — run via sudo or export it}"; }
+alert() {
+  printf '%s %s\n' "$(date -Is)" "$*" >> /var/log/beaut/connections.log
+  command -v wall >/dev/null 2>&1 && printf 'beaut: %s\n' "$*" | wall -n 2>/dev/null || true
+}

@@ -1,0 +1,16 @@
+[Unit]
+Description=Beaut worker @INDEX@ (core @CPU@)
+After=beaut-orchestrator.service
+BindsTo=beaut-orchestrator.service
+
+[Service]
+Type=simple
+User=@SU@
+Group=@SG@
+CPUAffinity=@CPU@
+Nice=5
+ExecStart=/bin/sh -c 'while :; do sleep 3600; done'
+@HARDEN@
+
+[Install]
+WantedBy=multi-user.target

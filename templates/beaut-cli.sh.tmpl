@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -uo pipefail
+. @LIB_DIR@/beaut-lib
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+  init)
+    need_pw
+    lvl=$("$T" auth "$BEAUT_PASSWORD") || { echo "identity not approved" >&2; exit 1; }
+    echo "level=$lvl | $("$T" role) | ip=$(myip)" ;;
+  heartbeat) need_pw; "$T" heartbeat "$LOG" "$me" "$(myip)" "$BEAUT_PASSWORD" ;;
+  peers)   need_pw; "$T" peers "$LOG" "$BEAUT_PASSWORD" ;;
+  pick)    need_pw; "$T" pick "$LOG" "$BEAUT_PASSWORD" ;;
+  retain)  "$T" retain ;;
+  run)
+    need_pw
+    dom="${1:?domain}"; shift || true
+    [ "$#" -gt 0 ] || { echo "usage: beaut run <domain> <cmd>" >&2; exit 1; }
+    task="$*"
+    { read -r best; read -r next; } < <("$T" pick "$LOG" "$BEAUT_PASSWORD")
+    [ -n "$best" ] || { echo "no worker available" >&2; exit 1; }
+    "$T" post "$LOG" "$me" task "${best}::user=${USER:-unknown}::NPROC=$("$T" cores)::domain=${dom}::${task}" "$BEAUT_PASSWORD"
+    echo "posted -> $best (next: ${next:-none})" ;;
+  watch)
+    need_pw
+    offset=0; seen=""
+    trap 'exit 0' TERM INT
+    while :; do
+      out=$("$T" read "$LOG" "$offset" "$BEAUT_PASSWORD" 2>/dev/null || true)
+      cnt=$("$T" read "$LOG" "$offset" "$BEAUT_PASSWORD" 2>&1 >/dev/null || echo 0)
+      while IFS=$'\t' read -r ts worker action payload; do
+        [ -n "${worker:-}" ] || continue
+        [ "$worker" = "$me" ] && continue
+        case "$action" in
+          heartbeat)
+            case " $seen " in *" $worker "*) ;; *)
+              seen="$seen $worker"; alert "WORKER_CONNECT $worker ${payload%%:*}" ;;
+            esac ;;
+          task)
+            target="${payload%%::*}"; rest="${payload#*::}"
+            nproc="${rest%%::*}"; rest="${rest#*::}"
+            dom="${rest%%::*}"; rest="${rest#*::}"; dom="${dom#domain=}"
+            [ "$target" = "$(myip)" ] || [ "$target" = "*" ] || continue
+            if [ "$("$T" role)" = router ]; then
+              "$T" post "$LOG" "$me" route "${target}::${dom}" "$BEAUT_PASSWORD"
+              alert "TRAFFIC_ROUTE $dom -> $target"
+              continue
+            fi
+            if [ "${BEAUT_ALLOW_EXEC:-0}" != 1 ]; then
+              alert "EXEC_BLOCKED $dom from $worker (BEAUT_ALLOW_EXEC=0)"; continue
+            fi
+            if [ -n "${BEAUT_EXEC_DOMAINS:-}" ] && [[ ",${BEAUT_EXEC_DOMAINS}," != *",${dom},"* ]]; then
+              alert "EXEC_BLOCKED domain=$dom not in allowlist"; continue
+            fi
+            alert "EXEC_START $dom from $worker"
+            if timeout "${BEAUT_EXEC_TIMEOUT_S:-300}" bash -c "$rest"; then
+              "$T" post "$LOG" "$me" result "$(myip)::${dom}" "$BEAUT_PASSWORD"
+            else
+              "$T" post "$LOG" "$me" fail "$(myip)::${dom}" "$BEAUT_PASSWORD"
+            fi ;;
+        esac
+      done <<< "$out"
+      offset=$(( offset + ${cnt:-0} ))
+      sleep "${BEAUT_POLL_S:-3}"
+    done ;;
+  help|*)
+    cat >&2 <<H
+usage: beaut <cmd>
+  init                 verify identity + show role
+  heartbeat            post one heartbeat
+  peers | pick         scheduler view
+  run <domain> <cmd>   post a task to the best worker
+  watch                dispatch loop (used by the service)
+  retain               prune/archive the log
+H
+    ;;
+esac

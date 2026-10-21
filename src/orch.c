@@ -1,5 +1,6 @@
 #include "crypt.h"
 #include "ft.h"
+#include "orch.h"
 #include "tsointsoin.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -279,7 +280,7 @@ static void help(void) {
       "  heartbeat <log> <w> <ip> <pw>                       retain\n"
       "  encode <text>              decode <text>\n");
 }
-int main(int argc, char **argv) {
+int orch_run(int argc, char **argv) {
     if (sodium_init() < 0) { fputs("sodium_init failed\n", stderr); return 1; }
     cfg_init();
     priv_load();
