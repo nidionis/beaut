@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-set -uo pipefail
-. @LIB_DIR@/beaut-lib
-E="@BEAUT_ETC_DIR@"
-T="@BEAUT_TOOL@"
-[ "$#" -ge 1 ] || { echo "usage: beaut-approve <id> [level=2]" >&2; exit 1; }
-"$T" approve "$E/pending.tsv" "$E/priv.tsv" "$1" "${2:-2}" && echo "approved $1 level ${2:-2}"

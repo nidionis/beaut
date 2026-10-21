@@ -118,6 +118,7 @@ static int log_read(int offset, char *buf, size_t bufsz, const unsigned char *ke
         int ts = atoi(line);
         if ((int)time(NULL) - ts > C.ttl_s) continue;
         char *hex = sp + 1;
+        hex[strcspn(hex, "\r\n")] = 0;
         size_t hlen = strlen(hex);
         if (hlen % 2) continue;
         size_t rl = hlen / 2;
@@ -210,8 +211,9 @@ static void retain(void) {
     if (rename(tmp, LOGP) != 0) remove(tmp);
 }
 static void c_join(char **a) {
+    if (!a[0] || !a[1]) { fputs("usage: join <pending> <pw>\n", stderr); return; }
     unsigned char key[KEY_BYTES];
-    derive(key, a[0]);
+    derive(key, a[1]);
     char id[IDENTITY_HEX_LEN];
     beaut_identity(id, key);
     unsigned char pk[SIGN_PK];
@@ -228,6 +230,7 @@ static void c_join(char **a) {
     printf("pending id=%s pk=%s\n", id, pkhex);
 }
 static int c_approve(char **a) {
+    if (!a[2] || !a[3]) { fputs("usage: approve <pending> <priv> <id> <level>\n", stderr); return 1; }
     FILE *p = fopen(PENDP, "r");
     if (!p) return 1;
     char line[PRIV_LINE_MAX + 8], dec[PRIV_LINE_MAX + 8];

@@ -1,25 +1,64 @@
 #!/usr/bin/env bash
+# @NAME@ — beaut CLI (generated from templates/beaut-cli.sh.tmpl)
 set -uo pipefail
-. @LIB_DIR@/beaut-lib
+. "@LIB_DIR@/beaut-lib"
+
 cmd="${1:-help}"; shift || true
+
 case "$cmd" in
   init)
     need_pw
     lvl=$("$T" auth "$BEAUT_PASSWORD") || { echo "identity not approved" >&2; exit 1; }
     echo "level=$lvl | $("$T" role) | ip=$(myip)" ;;
-  heartbeat) need_pw; "$T" heartbeat "$LOG" "$me" "$(myip)" "$BEAUT_PASSWORD" ;;
-  peers)   need_pw; "$T" peers "$LOG" "$BEAUT_PASSWORD" ;;
-  pick)    need_pw; "$T" pick "$LOG" "$BEAUT_PASSWORD" ;;
-  retain)  "$T" retain ;;
+
+  join)
+    need_pw
+    "$T" join "@ENV_DIR@/pending.tsv" "$BEAUT_PASSWORD"
+    echo "ask an admin: $NAME approve <id> <level>" ;;
+
+  approve)
+    need_pw
+    [ "$#" -ge 1 ] || { echo "usage: $NAME approve <id> [level]" >&2; exit 1; }
+    "$T" approve "@ENV_DIR@/pending.tsv" "@ENV_DIR@/priv.tsv" "$1" "${2:-2}" \
+      && echo "approved $1 level ${2:-2}" ;;
+
+  ban)
+    need_pw
+    [ "$#" -eq 1 ] || { echo "usage: $NAME ban <id>" >&2; exit 1; }
+    enc=$("$T" encode "$1" | cut -c1-3)
+    if [ -f "@ENV_DIR@/priv.tsv" ]; then
+      grep -v "$enc" "@ENV_DIR@/priv.tsv" > "@ENV_DIR@/priv.tsv.t" || true
+      mv "@ENV_DIR@/priv.tsv.t" "@ENV_DIR@/priv.tsv"
+    fi
+    echo "banned $1" ;;
+
+  heartbeat)
+    need_pw
+    "$T" heartbeat "$LOG" "$me" "$(myip)" "$BEAUT_PASSWORD" ;;
+
+  peers)
+    need_pw
+    "$T" peers "$LOG" "$BEAUT_PASSWORD" ;;
+
+  pick)
+    need_pw
+    "$T" pick "$LOG" "$BEAUT_PASSWORD" ;;
+
+  retain)
+    "$T" retain ;;
+
   run)
     need_pw
     dom="${1:?domain}"; shift || true
-    [ "$#" -gt 0 ] || { echo "usage: beaut run <domain> <cmd>" >&2; exit 1; }
+    [ "$#" -gt 0 ] || { echo "usage: $NAME run <domain> <cmd>" >&2; exit 1; }
     task="$*"
     { read -r best; read -r next; } < <("$T" pick "$LOG" "$BEAUT_PASSWORD")
     [ -n "$best" ] || { echo "no worker available" >&2; exit 1; }
-    "$T" post "$LOG" "$me" task "${best}::user=${USER:-unknown}::NPROC=$("$T" cores)::domain=${dom}::${task}" "$BEAUT_PASSWORD"
+    "$T" post "$LOG" "$me" task \
+      "${best}::user=${USER:-unknown}::NPROC=$("$T" cores)::domain=${dom}::${task}" \
+      "$BEAUT_PASSWORD"
     echo "posted -> $best (next: ${next:-none})" ;;
+
   watch)
     need_pw
     offset=0; seen=""
@@ -40,7 +79,7 @@ case "$cmd" in
             nproc="${rest%%::*}"; rest="${rest#*::}"
             dom="${rest%%::*}"; rest="${rest#*::}"; dom="${dom#domain=}"
             [ "$target" = "$(myip)" ] || [ "$target" = "*" ] || continue
-            if [ "$("$T" role)" = router ]; then
+            if [ "$("$T" role | awk '{print $1}')" = router ]; then
               "$T" post "$LOG" "$me" route "${target}::${dom}" "$BEAUT_PASSWORD"
               alert "TRAFFIC_ROUTE $dom -> $target"
               continue
@@ -62,14 +101,19 @@ case "$cmd" in
       offset=$(( offset + ${cnt:-0} ))
       sleep "${BEAUT_POLL_S:-3}"
     done ;;
+
   help|*)
     cat >&2 <<H
-usage: beaut <cmd>
+usage: $NAME <cmd> [args]
   init                 verify identity + show role
+  join                 request an identity (writes pending.tsv)
+  approve <id> [lvl]   approve a pending identity (default level 2)
+  ban <id>             remove an identity
   heartbeat            post one heartbeat
-  peers | pick         scheduler view
+  peers                list live peers
+  pick                 show the scheduler's best/next worker
   run <domain> <cmd>   post a task to the best worker
-  watch                dispatch loop (used by the service)
+  watch                dispatch loop (run this as the service)
   retain               prune/archive the log
 H
     ;;
