@@ -140,6 +140,16 @@ do_install() {
     fi
   fi
 
+  local lvl_now
+  lvl_now="$("$TOOL" auth "$BEAUT_PASSWORD" 2>/dev/null || echo 0)"
+  if [ "${lvl_now:-0}" -lt 1 ]; then
+    warn "identity is not approved on this node"
+    info "here:  $NAME join"
+    info "admin: $NAME approve <id> <level> [pk], then copy ~/.beaut/etc/priv.tsv here"
+  else
+    info "identity level=$lvl_now"
+  fi
+
   echo
   log "done — $BIN_DIR/$NAME"
   info "config: $CONF (0600)"
