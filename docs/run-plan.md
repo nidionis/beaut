@@ -270,10 +270,33 @@ heartbeats propagated both ways, a task posted on B executed on A, its result
 returned to B, a forged/tampered record was dropped, and a valid level-1 task
 was refused with `EXEC_BLOCKED`.
 
-**Status:** P1 hub/peer and P2 per-request verification implemented; `priv`
+### 4.5 Running a cluster
+
+1. On the admin/orchestrator, install and keep `beaut hub` (default port
+   `BEAUT_PORT=7331`) plus `beaut watch` if it is also a worker.
+2. On every other node, run `beaut join`; the admin reads the id from
+   `beaut pending` (or the join output) and runs
+   `beaut approve <id> <level> [pk]`. Copy the resulting `priv.tsv` to every
+   node (`~/.beaut/etc/priv.tsv`, mode 0600). Each node keeps its own
+   `device.key`; only public keys live in `priv.tsv`.
+3. Start `beaut peer <orchestrator-ip>` next to `watch` on workers and clients.
+   A router runs its own `beaut hub` for downstream nodes and
+   `beaut peer <orchestrator-ip>` upstream.
+4. `beaut run <domain|ip> <cmd>` posts locally and one-shot pushes the new
+   record to `ORCHESTRATOR_IP`; a persistent `peer` delivers results/events
+   live. `beaut peers` then lists every verified node.
+
+Because every record is verified at the hub and again at each receiving node,
+the socket is only a carrier: a router forwarding a frame cannot forge a
+level-2 request or a level-3 approval. Rate limiting happens at the hub; the
+process nice/kill policy still happens on the node that owns the child.
+
+**Status:** P1 hub/peer, one-shot push and P2 per-request verification are
+implemented. `priv.tsv` distribution is still a manual copy; automatic
 distribution and TLS/Noise remain future work.
 
 ---
+
 
 ## 5. P3 — stegano transport
 
