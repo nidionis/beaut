@@ -830,7 +830,12 @@ int orch_run(int argc, char **argv) {
     else if (!strcmp(cmd, "peers")) c_peers(a);
     else if (!strcmp(cmd, "pick")) c_pick(a);
     else if (!strcmp(cmd, "heartbeat")) c_heartbeat(a);
-    else if (!strcmp(cmd, "hub")) { if (!a[0] || !a[1]) { help(); return 1; } return net_hub(a[0], a[1]); }
+    else if (!strcmp(cmd, "hub") || !strcmp(cmd, "router") || !strcmp(cmd, "orchestrator") || !strcmp(cmd, "listen")) {
+        int i = (a[0] && !strcmp(a[0], "--listen")) ? 1 : 0;
+        if (!a[i] || !a[i + 1]) { help(); return 1; }
+        const char *port = strrchr(a[i], ':');
+        return net_hub(port ? port + 1 : a[i], a[i + 1]);
+    }
     else if (!strcmp(cmd, "peer")) { if (!a[0] || !a[1] || !a[2]) { help(); return 1; } return net_peer(a[0], a[1], a[2]); }
     else if (!strcmp(cmd, "push")) { if (!a[0] || !a[1] || !a[2]) { help(); return 1; } return net_push(a[0], a[1], a[2]); }
     else if (!strcmp(cmd, "steg")) return c_steg(a);

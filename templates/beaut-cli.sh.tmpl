@@ -123,10 +123,12 @@ case "$cmd" in
     need_pw; need_level 1
     "$T" heartbeat "$LOG" "$me" "$(myip)" "$BEAUT_PASSWORD" ;;
 
-  hub|router)
+  hub|router|orchestrator|listen)
     need_pw; need_level 1
     has_cap router || has_cap orchestrator || { echo "$NAME: this node is neither router nor orchestrator" >&2; exit 1; }
-    "$T" hub "${1:-${BEAUT_PORT:-7331}}" "$BEAUT_PASSWORD" ;;
+    if [ "${1:-}" = "--listen" ]; then shift; fi
+    port="${1:-${BEAUT_PORT:-7331}}"
+    "$T" hub "${port##*:}" "$BEAUT_PASSWORD" ;;
 
   peer)
     need_pw; need_level 1
@@ -311,7 +313,7 @@ usage: $NAME <cmd> [args]
   pick [domain]        show the scheduler's best/next worker
   run <domain|ip> <cmd> post a task (self when this is the only worker)
   watch                worker loop: heartbeat + execute local tasks
-  hub [port]           TCP hub (orchestrator/router front door)
+  hub [port]           TCP hub (also: router/orchestrator --listen [addr:]port)
   peer <host> [port]   mirror this node's signed log to a hub
   push <host> [port]   one-shot: send the last record, pull recent hub records
   steg pack <file> <dir> [addr]        split a file into PNG packages
