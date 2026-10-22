@@ -16,6 +16,39 @@ the AEAD's job; PNG CRC is not authentication.
 
 ---
 
+## 0. Shell contract (exact variable names)
+
+These are the names the editing script uses; everything else is derived from them.
+
+```sh
+STEGANO_MAX_SIZE=512M          # parsed to 536870912 bytes (per transfer)
+SUFFIX=png                     # last extension is always .png
+COLOR_SIZE=1                   # bytes per channel (PNG bit depth 8)
+PIXEL_SIZE=4                   # RGBA: 4 * COLOR_SIZE
+DATA_SIZE=$COLOR_SIZE          # payload bytes carried per channel
+PNG_OFFSET=64                  # channel-bytes before the payload
+W=64; H=64                     # canvas in pixels
+STAMP=9f2c1a7b                 # transfer id (8 hex, sha256(source)[0:8])
+COUNTER=000042                 # package seq, 6 digits, under flock
+
+STEGANO_NAME="$(date '+%F%T' | sed 's/:/-/g')-${ADDR}-package.${STAMP}.${COUNTER}.${SUFFIX}"
+# 2026-10-22-21-45-00-198.192.8.240-package.9f2c1a7b.000042.png
+```
+
+`date '+%F%T' | sed 's/:/-/g'` is the requested expression; the script may use
+`date '+%F-%H-%M-%S'` internally because it produces the same string without a
+pipe. `ADDR` is sanitized before use: `tr -c 'A-Za-z0-9._-' '_'`.
+
+Derived, never configured independently:
+
+```
+CHANNELS  = PIXEL_SIZE / COLOR_SIZE        # 4 (R,G,B,A)
+PIXELS    = W * H                          # 4,096
+CAPACITY  = PIXELS * PIXEL_SIZE - PNG_OFFSET
+```
+
+---
+
 ## 1. Pixel format and parameters
 
 ```
@@ -130,23 +163,19 @@ resend(stamp, seqs...)  -> regenerate PNGs      # deterministic, byte-identical
 
 ## 5. Naming
 
-Keep the requested shape, add `stamp` and `seq` so a file is self-describing:
+`STEGANO_NAME` is defined once in §0; nothing else builds filenames by hand.
 
 ```sh
-STEGANO_MAX_SIZE=536870912          # "512M", parsed to bytes
-SUFFIX=png
-STAMP="$(sha256sum "$SRC" | cut -c1-8)"
-COUNTER="$(printf '%06d' "$SEQ")"   # seq, under flock
-BASE="$(date '+%F-%H-%M-%S')-${ADDR}-package.${STAMP}.${COUNTER}.${SUFFIX}"
-# 2026-10-21-21-45-00-198.192.8.240-package.9f2c1a7b.000042.png
+STEGANO_NAME="$(date '+%F%T' | sed 's/:/-/g')-${ADDR}-package.${STAMP}.${COUNTER}.${SUFFIX}"
+# 2026-10-22-21-45-00-198.192.8.240-package.9f2c1a7b.000042.png
 ```
 
 - `ADDR` sanitized with `tr -c 'A-Za-z0-9._-' '_'` (IPv6 colons would create paths).
 - `COUNTER` is per-transfer `seq`, zero-padded 6, written under `flock`.
 - Last extension is always `.png`; `COUNTER`/`STAMP` are also inside the header,
   so a renamed file is still decodable.
-- If `total` is unknown at start, the name is written after the first pass; the
-  plan is to always know `total` (source size is known) to keep discovery simple.
+- `total` is known at send time (source size is known); `total=0`/`EOP` stays
+  supported for unknown-length streams.
 
 ---
 

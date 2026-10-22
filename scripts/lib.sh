@@ -16,6 +16,27 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # BIN_DIR is a common name in build environments; never inherit a foreign one.
 unset BIN_DIR
 
+# norm_roles <list> — normalise "worker,client" / "worker client" → "worker client"
+norm_roles() { printf '%s\n' "${1//,/ }" | xargs; }
+
+# role_has <list> <role> — composable role membership
+role_has() {
+  case " $(norm_roles "$1") " in *" $2 "*) return 0 ;; esac
+  return 1
+}
+
+# validate_roles <list> — every token must be a known role
+validate_roles() {
+  local r
+  for r in $(norm_roles "$1"); do
+    case "$r" in
+      orchestrator|router|worker|client) ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+
 # load_config [file] — source and validate a config.env
 load_config() {
   local f="${1:-$ROOT/config.env}"
@@ -26,10 +47,8 @@ load_config() {
   set +a
   : "${BEAUT_PASSWORD:?config.env must define BEAUT_PASSWORD}"
   : "${ROLE:?config.env must define ROLE (orchestrator|router|worker|client)}"
-  case "$ROLE" in
-    orchestrator|router|worker|client) ;;
-    *) die "unknown ROLE: $ROLE (orchestrator|router|worker|client)" ;;
-  esac
+  ROLE="$(norm_roles "$ROLE")"
+  validate_roles "$ROLE" || die "unknown ROLE: $ROLE (orchestrator|router|worker|client, comma-separated)"
   log "config loaded from ${f#"$ROOT"/} (role=$ROLE)"
 }
 
@@ -59,6 +78,9 @@ resolve_paths() {
 # conf_set <file> <key> <value> — set or append KEY=VALUE
 conf_set() {
   local f="$1" k="$2" v="$3" tmp
+  case "$v" in
+    *[[:space:]]*) v="\"$v\"" ;;
+  esac
   tmp="$(mktemp)"
   awk -v k="$k" -v v="$v" '
     $0 ~ "^" k "=" { print k "=" v; done = 1; next }

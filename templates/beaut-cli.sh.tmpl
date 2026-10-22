@@ -1,29 +1,105 @@
 #!/usr/bin/env bash
 # @NAME@ — beaut CLI (generated from templates/beaut-cli.sh.tmpl)
+#
+# Roles are composable: BEAUT_CAPS may hold any of
+#   orchestrator router worker client
+# Every node keeps a local orchestrator/router so a lone worker can run its
+# own requests.  Levels gate actions: 1 worker, 2 client, 3 admin.
 set -uo pipefail
 . "@LIB_DIR@/beaut-lib"
 
 cmd="${1:-help}"; shift || true
 
+# exec_task <client> <domain> <stamp> <cmd>
+# Applies nice/timeout, then applies the per-client abuse policy before
+# starting the process.  Runs in the background so `watch` keeps reading the
+# log and can kill a client that turned abusive.
+exec_task() {
+  local client="$1" dom="$2" stamp="$3" cmdline="$4"
+  local dir="@STATE_DIR@/clients" pidfile ratefile now count p alive nice_lvl bg
+  client="${client:-unknown}"
+  dom="${dom:-local}"
+  mkdir -p "$dir"
+  pidfile="$dir/$client.pids"
+  ratefile="$dir/$client.rate"
+  now=$(date +%s)
+
+  # rolling 60 s request budget per client
+  touch "$ratefile"
+  awk -v n="$now" '$1 >= n - 60' "$ratefile" 2>/dev/null > "$ratefile.t" \
+    && mv "$ratefile.t" "$ratefile"
+  count=$(wc -l < "$ratefile")
+  if [ "$count" -ge "${BEAUT_RATE_LIMIT:-60}" ]; then
+    alert "EXEC_BLOCKED abuse client=$client rate=${count}/60"
+    if [ "${BEAUT_ABUSE_ACTION:-nice}" = kill ]; then
+      while read -r p; do
+        kill_tree "$p"; alert "EXEC_KILL client=$client pid=$p (rate)"
+      done < "$pidfile" 2>/dev/null || true
+      : > "$pidfile"
+    fi
+    return 1
+  fi
+
+  # still-live processes started for this client
+  alive=""
+  if [ -f "$pidfile" ]; then
+    for p in $(cat "$pidfile"); do
+      kill -0 "$p" 2>/dev/null && alive="$alive $p"
+    done
+  fi
+  alive="${alive# }"
+  count=$(printf '%s\n' "$alive" | wc -w)
+
+  nice_lvl="${BEAUT_NICE:-10}"
+  if [ "$count" -ge "${BEAUT_MAX_CONCURRENT:-1}" ]; then
+    if [ "${BEAUT_ABUSE_ACTION:-nice}" = kill ]; then
+      p="${alive%% *}"
+      kill_tree "$p"; alert "EXEC_KILL client=$client pid=$p (max concurrent)"
+    else
+      nice_lvl=19
+      alert "EXEC_THROTTLED client=$client (max concurrent, nice=$nice_lvl)"
+    fi
+  fi
+
+  printf '%s\n' "$now" >> "$ratefile"
+  alert "EXEC_START dom=$dom client=$client stamp=${stamp:-none} nice=$nice_lvl"
+
+  (
+    nice -n "$nice_lvl" timeout "${BEAUT_EXEC_TIMEOUT_S:-300}" bash -c "$cmdline"
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+      "$T" post "$LOG" "$me" result \
+        "$(myip)::${dom}::client=${client}::stamp=${stamp}" "$BEAUT_PASSWORD"
+    else
+      "$T" post "$LOG" "$me" fail \
+        "$(myip)::${dom}::client=${client}::stamp=${stamp}::rc=${rc}" "$BEAUT_PASSWORD"
+    fi
+  ) &
+  bg=$!
+  printf '%s\n' "$bg" >> "$pidfile"
+  tail -n 64 "$pidfile" > "$pidfile.t" 2>/dev/null && mv "$pidfile.t" "$pidfile"
+  return 0
+}
+
 case "$cmd" in
   init)
     need_pw
-    lvl=$("$T" auth "$BEAUT_PASSWORD") || { echo "identity not approved" >&2; exit 1; }
-    echo "level=$lvl | $("$T" role) | ip=$(myip)" ;;
+    lvl=$(level_of)
+    if [ "${lvl:-0}" -lt 1 ]; then echo "identity not approved (join, then ask an admin)" >&2; exit 1; fi
+    echo "level=$lvl | caps=${BEAUT_CAPS:-worker} | domain=${BEAUT_DOMAIN:-?} | ip=$(myip)" ;;
 
   join)
     need_pw
-    "$T" join "@ENV_DIR@/pending.tsv" "$BEAUT_PASSWORD"
+    "$T" join "@ENV_DIR@/pending.tsv" "$BEAUT_PASSWORD" || { echo "join refused" >&2; exit 1; }
     echo "ask an admin: $NAME approve <id> <level>" ;;
 
   approve)
-    need_pw
+    need_pw; need_level 3
     [ "$#" -ge 1 ] || { echo "usage: $NAME approve <id> [level]" >&2; exit 1; }
-    "$T" approve "@ENV_DIR@/pending.tsv" "@ENV_DIR@/priv.tsv" "$1" "${2:-2}" \
-      && echo "approved $1 level ${2:-2}" ;;
+    "$T" approve "@ENV_DIR@/pending.tsv" "@ENV_DIR@/priv.tsv" "$1" "${2:-2}" ;;
 
   ban)
-    need_pw
+    need_pw; need_level 3
     [ "$#" -eq 1 ] || { echo "usage: $NAME ban <id>" >&2; exit 1; }
     enc=$("$T" encode "$1" | cut -c1-3)
     if [ -f "@ENV_DIR@/priv.tsv" ]; then
@@ -32,72 +108,142 @@ case "$cmd" in
     fi
     echo "banned $1" ;;
 
+  priv)
+    need_pw; need_level 3
+    case "${1:-}" in
+      dedupe) "$T" privdedupe ;;
+      *) echo "usage: $NAME priv dedupe" >&2; exit 1 ;;
+    esac ;;
+
   heartbeat)
-    need_pw
+    need_pw; need_level 1
     "$T" heartbeat "$LOG" "$me" "$(myip)" "$BEAUT_PASSWORD" ;;
 
   peers)
-    need_pw
+    need_pw; need_level 1
+    printf 'name\tip\tload\tcores\tdomain\n'
     "$T" peers "$LOG" "$BEAUT_PASSWORD" ;;
 
   pick)
-    need_pw
-    "$T" pick "$LOG" "$BEAUT_PASSWORD" ;;
+    need_pw; need_level 1
+    "$T" pick "$LOG" "$BEAUT_PASSWORD" "${1:-}" ;;
 
   retain)
+    need_pw; need_level 3
     "$T" retain ;;
 
   run)
-    need_pw
-    dom="${1:?domain}"; shift || true
-    [ "$#" -gt 0 ] || { echo "usage: $NAME run <domain> <cmd>" >&2; exit 1; }
+    need_pw; need_level 2
+    dom="${1:-}"; shift || true
+    [ -n "$dom" ] && [ "$#" -gt 0 ] || { echo "usage: $NAME run <domain|ip> <cmd>" >&2; exit 1; }
     task="$*"
-    { read -r best; read -r next; } < <("$T" pick "$LOG" "$BEAUT_PASSWORD")
-    [ -n "$best" ] || { echo "no worker available" >&2; exit 1; }
+    # make self visible to the scheduler even on a one-node cluster
+    "$T" heartbeat "$LOG" "$me" "$(myip)" "$BEAUT_PASSWORD" >/dev/null 2>&1 || true
+
+    best=""; next=""; target_dom="$dom"
+    if [[ "$dom" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+      best="$dom"; target_dom=""
+    else
+      { read -r best; read -r next; } < <("$T" pick "$LOG" "$BEAUT_PASSWORD" "$dom" 2>/dev/null)
+    fi
+
+    if [ -z "$best" ]; then
+      # local orchestrator fallback: this node is the only worker for the domain
+      if has_cap worker && { [ -z "$target_dom" ] || [ "$target_dom" = "${BEAUT_DOMAIN:-worker}" ] || [ "$target_dom" = "*" ]; }; then
+        best="$(myip)"
+      else
+        echo "$NAME: no worker for domain '${dom}'" >&2
+        exit 1
+      fi
+    fi
+    if [ "$best" = "$(myip)" ] && ! has_cap worker; then
+      echo "$NAME: ${best} is this client-only node; no local worker for '${dom}'" >&2
+      exit 1
+    fi
+
+    stamp=$(printf '%s|%s|%s' "$me" "$$" "$(date +%s%N)" | sha256sum | cut -c1-8)
     "$T" post "$LOG" "$me" task \
-      "${best}::user=${USER:-unknown}::NPROC=$("$T" cores)::domain=${dom}::${task}" \
-      "$BEAUT_PASSWORD"
-    echo "posted -> $best (next: ${next:-none})" ;;
+      "${best}::client=${me}::user=${USER:-unknown}::NPROC=$("$T" cores)::domain=${target_dom:-local}::stamp=${stamp}::${task}" \
+      "$BEAUT_PASSWORD" || { echo "$NAME: could not post task" >&2; exit 1; }
+    echo "posted -> ${best} (stamp ${stamp}${next:+, next ${next}})"
+    [ "$best" = "$(myip)" ] || echo "note: remote transport is P1; ${best} will see it after a sync" >&2 ;;
 
   watch)
-    need_pw
-    offset=0; seen=""
-    trap 'exit 0' TERM INT
+    need_pw; need_level 1
+    has_cap worker || { echo "$NAME: this node is not a worker (caps=${BEAUT_CAPS:-worker})" >&2; exit 1; }
+    offset=0; seen_tasks=""; seen_peers=""; start_ts=$(date +%s); last_hb=0
+    alert "WATCH_START $me caps=${BEAUT_CAPS:-worker} domain=${BEAUT_DOMAIN:-?}"
+    stop_watch() {
+      local f p
+      for f in "@STATE_DIR@/clients"/*.pids; do
+        [ -f "$f" ] || continue
+        while read -r p; do kill_tree "$p"; done < "$f"
+      done
+      alert "WATCH_STOP $me"
+      exit 0
+    }
+    trap stop_watch TERM INT
     while :; do
-      out=$("$T" read "$LOG" "$offset" "$BEAUT_PASSWORD" 2>/dev/null || true)
-      cnt=$("$T" read "$LOG" "$offset" "$BEAUT_PASSWORD" 2>&1 >/dev/null || echo 0)
+      now=$(date +%s)
+      if [ $((now - last_hb)) -ge "${BEAUT_HEARTBEAT_S:-30}" ]; then
+        "$T" heartbeat "$LOG" "$me" "$(myip)" "$BEAUT_PASSWORD" >/dev/null 2>&1 || true
+        last_hb=$now
+      fi
+
+      err=$(mktemp)
+      out=$("$T" read "$LOG" "$offset" "$BEAUT_PASSWORD" 2>"$err" || true)
+      cnt=$(cat "$err" 2>/dev/null || echo 0); rm -f "$err"
+
       while IFS=$'\t' read -r ts worker action payload; do
         [ -n "${worker:-}" ] || continue
-        [ "$worker" = "$me" ] && continue
         case "$action" in
           heartbeat)
-            case " $seen " in *" $worker "*) ;; *)
-              seen="$seen $worker"; alert "WORKER_CONNECT $worker ${payload%%:*}" ;;
+            [ "$worker" = "$me" ] && continue
+            case " $seen_peers " in *" $worker "*) ;; *)
+              seen_peers="$seen_peers $worker"
+              alert "WORKER_CONNECT $worker ${payload%%:*}" ;;
             esac ;;
           task)
+            [ "${ts:-0}" -ge "$start_ts" ] || continue
+
+            # payload: <target>::client=..::user=..::NPROC=..::domain=..::stamp=..::<cmd>
             target="${payload%%::*}"; rest="${payload#*::}"
-            nproc="${rest%%::*}"; rest="${rest#*::}"
-            dom="${rest%%::*}"; rest="${rest#*::}"; dom="${dom#domain=}"
-            [ "$target" = "$(myip)" ] || [ "$target" = "*" ] || continue
-            if [ "$("$T" role | awk '{print $1}')" = router ]; then
-              "$T" post "$LOG" "$me" route "${target}::${dom}" "$BEAUT_PASSWORD"
-              alert "TRAFFIC_ROUTE $dom -> $target"
-              continue
-            fi
+            client=""; dom=""; stamp=""
+            while :; do
+              case "$rest" in
+                client=*::*) client="${rest%%::*}"; client="${client#client=}"; rest="${rest#*::}" ;;
+                user=*::*)   rest="${rest#*::}" ;;
+                NPROC=*::*)  rest="${rest#*::}" ;;
+                domain=*::*) dom="${rest%%::*}"; dom="${dom#domain=}"; rest="${rest#*::}" ;;
+                stamp=*::*)  stamp="${rest%%::*}"; stamp="${stamp#stamp=}"; rest="${rest#*::}" ;;
+                *) break ;;
+              esac
+            done
+            cmdline="$rest"
+
+            case "$target" in
+              "$(myip)"|local|'*') ;;
+              *) continue ;;
+            esac
+
+            key="${stamp:-$(printf '%s' "$ts|$worker|$payload" | cksum | cut -d' ' -f1)}"
+            case " $seen_tasks " in *" $key "*) continue ;; esac
+            seen_tasks="$seen_tasks $key"
+            seen_tasks=$(printf '%s\n' $seen_tasks | tail -n 256 | tr '\n' ' ')
+
             if [ "${BEAUT_ALLOW_EXEC:-0}" != 1 ]; then
-              alert "EXEC_BLOCKED $dom from $worker (BEAUT_ALLOW_EXEC=0)"; continue
+              alert "EXEC_BLOCKED dom=$dom client=$client (BEAUT_ALLOW_EXEC=0)"; continue
             fi
-            if [ -n "${BEAUT_EXEC_DOMAINS:-}" ] && [[ ",${BEAUT_EXEC_DOMAINS}," != *",${dom},"* ]]; then
-              alert "EXEC_BLOCKED domain=$dom not in allowlist"; continue
+            if [ -n "${BEAUT_EXEC_DOMAINS:-}" ]; then
+              list=",${BEAUT_EXEC_DOMAINS//[ ,]/,,},"
+              case "$list" in *",$dom,"*) ;; *)
+                alert "EXEC_BLOCKED dom=$dom client=$client (not in BEAUT_EXEC_DOMAINS)"; continue ;;
+              esac
             fi
-            alert "EXEC_START $dom from $worker"
-            if timeout "${BEAUT_EXEC_TIMEOUT_S:-300}" bash -c "$rest"; then
-              "$T" post "$LOG" "$me" result "$(myip)::${dom}" "$BEAUT_PASSWORD"
-            else
-              "$T" post "$LOG" "$me" fail "$(myip)::${dom}" "$BEAUT_PASSWORD"
-            fi ;;
+            exec_task "$client" "$dom" "$stamp" "$cmdline" ;;
         esac
       done <<< "$out"
+
       offset=$(( offset + ${cnt:-0} ))
       sleep "${BEAUT_POLL_S:-3}"
     done ;;
@@ -105,15 +251,16 @@ case "$cmd" in
   help|*)
     cat >&2 <<H
 usage: $NAME <cmd> [args]
-  init                 verify identity + show role
+  init                 verify identity + show caps/domain
   join                 request an identity (writes pending.tsv)
-  approve <id> [lvl]   approve a pending identity (default level 2)
+  approve <id> [lvl]   approve/update a pending identity (1..3, default 2)
   ban <id>             remove an identity
+  priv dedupe          collapse duplicate priv.tsv/pending.tsv lines
   heartbeat            post one heartbeat
-  peers                list live peers
-  pick                 show the scheduler's best/next worker
-  run <domain> <cmd>   post a task to the best worker
-  watch                dispatch loop (run this as the service)
+  peers                list live peers (name ip load cores domain)
+  pick [domain]        show the scheduler's best/next worker
+  run <domain|ip> <cmd> post a task (self when this is the only worker)
+  watch                worker loop: heartbeat + execute local tasks
   retain               prune/archive the log
 H
     ;;

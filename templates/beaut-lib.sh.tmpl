@@ -1,10 +1,29 @@
 # beaut shared shell helpers — sourced by the beaut CLI
 CONF="@CONF@"
 SECRET="@SECRET@"
+
+# explicit environment entries win over the config file (handy for tests)
+_env_allow="${BEAUT_ALLOW_EXEC-}"
+_env_domains="${BEAUT_EXEC_DOMAINS-}"
+_env_timeout="${BEAUT_EXEC_TIMEOUT_S-}"
+_env_nice="${BEAUT_NICE-}"
+_env_max="${BEAUT_MAX_CONCURRENT-}"
+_env_rate="${BEAUT_RATE_LIMIT-}"
+_env_abuse="${BEAUT_ABUSE_ACTION-}"
+
 set -a
 [ -r "$CONF" ] && . "$CONF"
 [ -r "$SECRET" ] && . "$SECRET"
 set +a
+
+[ -n "$_env_allow" ]   && BEAUT_ALLOW_EXEC="$_env_allow"
+[ -n "$_env_domains" ] && BEAUT_EXEC_DOMAINS="$_env_domains"
+[ -n "$_env_timeout" ] && BEAUT_EXEC_TIMEOUT_S="$_env_timeout"
+[ -n "$_env_nice" ]    && BEAUT_NICE="$_env_nice"
+[ -n "$_env_max" ]     && BEAUT_MAX_CONCURRENT="$_env_max"
+[ -n "$_env_rate" ]    && BEAUT_RATE_LIMIT="$_env_rate"
+[ -n "$_env_abuse" ]   && BEAUT_ABUSE_ACTION="$_env_abuse"
+unset _env_allow _env_domains _env_timeout _env_nice _env_max _env_rate _env_abuse
 
 T="@TOOL@"
 LOG="@STATE_DIR@/log.enc"
@@ -18,6 +37,39 @@ myip() {
 
 need_pw() {
   : "${BEAUT_PASSWORD:?BEAUT_PASSWORD unset — put it in $CONF}"
+}
+
+# level_of — current identity's approval level (0 when unknown)
+level_of() {
+  local l
+  l=$("$T" auth "$BEAUT_PASSWORD" 2>/dev/null) || true
+  printf '%s\n' "${l:-0}"
+}
+
+# need_level <n> — refuse the command below the requested level
+need_level() {
+  local have
+  have=$(level_of)
+  if [ "${have:-0}" -lt "$1" ]; then
+    printf '%s: level %s < %s required (ask an admin to approve this id)\n' \
+      "$NAME" "${have:-0}" "$1" >&2
+    exit 1
+  fi
+}
+
+# has_cap <orchestrator|router|worker|client> — advertised capability
+has_cap() {
+  local caps="${BEAUT_CAPS:-worker}"
+  case ",${caps// /,}," in *",$1,"*) return 0 ;; esac
+  return 1
+}
+
+# kill_tree <pid> — terminate a process and all of its descendants
+kill_tree() {
+  local p="$1" c
+  [ -n "$p" ] || return 0
+  for c in $(pgrep -P "$p" 2>/dev/null); do kill_tree "$c"; done
+  kill -TERM "$p" 2>/dev/null || true
 }
 
 alert() {

@@ -14,7 +14,7 @@
 #define SALT_CTX "beaut-salt"
 #define LOG_HEX_MAX HEXBUF(NONCE_BYTES + MAX_MSG_LEN + TAG_BYTES)
 #define LOG_LINE_MAX (TS_STR_MAX + 1 + LOG_HEX_MAX + 1)
-#define PRIV_LINE_MAX (IDENTITY_HEX_LEN + 1 + SIGN_PK_HEX + 1 + LEVEL_STR_MAX + 1)
+#define PRIV_LINE_MAX (IDENTITY_HEX_LEN + 1 + SIGN_PK_HEX + 1 + TS_STR_MAX + 1)
 #define MSG_BUF_MAX (BEAUT_NAME_MAX + ACTION_MAX + MAX_MSG_LEN + 4)
 void beaut_derive_key(unsigned char *key, const char *pw, int ops, int mem);
 void beaut_identity(char *out, const unsigned char *key);

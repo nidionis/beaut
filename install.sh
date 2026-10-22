@@ -2,7 +2,7 @@
 # install.sh — beaut single entry point (the only user-facing script besides config.env)
 #
 #   ./install.sh                    install using config.env
-#   ./install.sh --role R [IP]      non-interactive install (orchestrator|router|worker|client)
+#   ./install.sh --role R [IP]      non-interactive install (comma list: orchestrator,router,worker,client)
 #   ./install.sh --status           show what is installed and whether it runs
 #   ./install.sh --uninstall        remove the installed CLI (state is kept)
 #   ./install.sh --serve [PORT]     publish a bootstrap tarball (curl | bash)
@@ -42,14 +42,22 @@ ensure_path() {
 }
 
 do_install() {
-  local role="$1" orch_ip="${2:-}"
+  local role="$1" orch_ip="${2:-}" domain
 
   if [ -f config.env ]; then load_config config.env; fi
-  ROLE="$role"
-  if [ "$ROLE" = orchestrator ]; then orch_ip="127.0.0.1"; fi
+  ROLE="$(norm_roles "$role")"
+  validate_roles "$ROLE" || die "unknown ROLE: $role (orchestrator|router|worker|client)"
+  if role_has "$ROLE" orchestrator; then orch_ip="127.0.0.1"; fi
   [ -n "$orch_ip" ] || die "$ROLE needs an orchestrator IP (arg 2 or IP_ORCHESTRATOR in config.env)"
   : "${BEAUT_PASSWORD:?BEAUT_PASSWORD is required}"
   export ROLE ORCH_IP="$orch_ip"
+
+  # advertised domain: router → vm, worker → worker, otherwise first cap
+  if role_has "$ROLE" router; then domain=vm
+  elif role_has "$ROLE" worker; then domain=worker
+  else domain="$(printf '%s' "$ROLE" | cut -d' ' -f1)"
+  fi
+  export BEAUT_DOMAIN="$domain"
 
   resolve_paths
   BEAUT_IF="${BEAUT_IF:-$(detect_if)}"
@@ -79,18 +87,26 @@ do_install() {
   conf_set "$CONF" BEAUT_ENV_DIR   "$ENV_DIR"
   conf_set "$CONF" BEAUT_STATE_DIR "$STATE_DIR"
   conf_set "$CONF" BEAUT_ETC_DIR   "$ENV_DIR"
-  conf_set "$CONF" BEAUT_DOMAIN    "$([ "$ROLE" = router ] && echo vm || echo "$ROLE")"
+  conf_set "$CONF" ROLE            "$ROLE"
+  conf_set "$CONF" BEAUT_CAPS      "$ROLE"
+  conf_set "$CONF" BEAUT_LOCAL_ORCH 1
+  conf_set "$CONF" BEAUT_DOMAIN    "$domain"
   conf_set "$CONF" BEAUT_IF        "$BEAUT_IF"
   conf_set "$CONF" BEAUT_HEARTBEAT_S "${BEAUT_HEARTBEAT_S:-30}"
   conf_set "$CONF" BEAUT_POLL_S      "${BEAUT_POLL_S:-3}"
   conf_set "$CONF" BEAUT_STALE_S     "${BEAUT_STALE_S:-90}"
   conf_set "$CONF" BEAUT_ALLOW_EXEC  "${BEAUT_ALLOW_EXEC:-0}"
   conf_set "$CONF" BEAUT_EXEC_DOMAINS "${BEAUT_EXEC_DOMAINS:-}"
+  conf_set "$CONF" BEAUT_EXEC_TIMEOUT_S "${BEAUT_EXEC_TIMEOUT_S:-300}"
+  conf_set "$CONF" BEAUT_NICE            "${BEAUT_NICE:-10}"
+  conf_set "$CONF" BEAUT_MAX_CONCURRENT  "${BEAUT_MAX_CONCURRENT:-1}"
+  conf_set "$CONF" BEAUT_RATE_LIMIT      "${BEAUT_RATE_LIMIT:-60}"
+  conf_set "$CONF" BEAUT_ABUSE_ACTION    "${BEAUT_ABUSE_ACTION:-nice}"
+  conf_set "$CONF" SCHEDULER_RESERVE_NODES "${SCHEDULER_RESERVE_NODES:-0}"
   conf_set "$CONF" ORCHESTRATOR_IP   "$orch_ip"
 
   # the C tool reads these from the environment
   export BEAUT_STATE_DIR="$STATE_DIR" BEAUT_ETC_DIR="$ENV_DIR"
-  export BEAUT_DOMAIN="$([ "$ROLE" = router ] && echo vm || echo "$ROLE")"
   export BEAUT_IF
 
   # runtime scripts
@@ -105,8 +121,8 @@ do_install() {
   if [ ! -s "$ENV_DIR/priv.tsv" ]; then
     log "bootstrapping admin identity"
     local id
-    id="$("$TOOL" join "$ENV_DIR/pending.tsv" "$BEAUT_PASSWORD" \
-      | awk -F'id=' '/id=/{print $2}' | cut -d' ' -f1)"
+    id="$("$TOOL" myid "$BEAUT_PASSWORD")"
+    "$TOOL" join "$ENV_DIR/pending.tsv" "$BEAUT_PASSWORD" >/dev/null 2>&1 || true
     if [ -n "$id" ]; then
       "$TOOL" approve "$ENV_DIR/pending.tsv" "$ENV_DIR/priv.tsv" "$id" 3
       chmod 0600 "$ENV_DIR/priv.tsv"
@@ -129,20 +145,21 @@ do_status() {
   resolve_paths
   local c=""
   if [ -r "$CONF" ]; then c="$CONF"; fi
-  local role="" allow="" domain=""
+  local role="" allow="" domain="" caps=""
   if [ -n "$c" ]; then
     role="$(sed -n 's/^ROLE=//p' "$c" | head -1 | sed 's/#.*//; s/["[:space:]]//g')"
+    caps="$(sed -n 's/^BEAUT_CAPS=//p' "$c" | head -1 | sed 's/#.*//; s/["[:space:]]//g')"
     domain="$(sed -n 's/^BEAUT_DOMAIN=//p' "$c" | head -1 | sed 's/#.*//; s/["[:space:]]//g')"
     allow="$(sed -n 's/^BEAUT_ALLOW_EXEC=//p' "$c" | head -1 | sed 's/#.*//; s/["[:space:]]//g')"
   fi
   printf '%-9s %s\n' "name:" "$NAME"
-  printf '%-9s %s\n' "role:" "${role:-?} (domain=${domain:-?}, allow_exec=${allow:-?})"
+  printf '%-9s %s\n' "role:" "${role:-?} (caps=${caps:-?}, domain=${domain:-?}, allow_exec=${allow:-?})"
   printf '%-9s %s %s\n' "cli:" "$BIN_DIR/$NAME" "$([ -x "$BIN_DIR/$NAME" ] && echo ok || echo MISSING)"
   printf '%-9s %s %s\n' "tool:" "$TOOL" "$([ -x "$TOOL" ] && echo ok || echo MISSING)"
   printf '%-9s %s\n' "config:" "$CONF"
   printf '%-9s %s\n' "state:" "$STATE_DIR"
-  if pgrep -f "$TOOL" >/dev/null 2>&1; then
-    printf '%-9s %s\n' "process:" "running"
+  if pgrep -f -- "$BIN_DIR/$NAME watch" >/dev/null 2>&1; then
+    printf '%-9s %s\n' "process:" "watch running"
   else
     printf '%-9s %s\n' "process:" "not running (beaut watch)"
   fi
@@ -157,6 +174,8 @@ do_status() {
 do_uninstall() {
   source_config
   resolve_paths
+  pkill -TERM -f -- "$BIN_DIR/$NAME watch" 2>/dev/null || true
+  sleep 1
   pkill -f "$TOOL" 2>/dev/null || true
   rm -f "$BIN_DIR/$NAME" "$TOOL" "$LIB_DIR/beaut-lib"
   rmdir "$LIB_DIR" 2>/dev/null || true
