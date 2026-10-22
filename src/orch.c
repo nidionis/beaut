@@ -125,7 +125,7 @@ static int priv_find(const char *id, char *pk_out, size_t pk_sz) {
 }
 static int log_post(const char *w, const char *act, const char *pl, const unsigned char *key) {
     unsigned char sk[SIGN_SK], pk[SIGN_PK];
-    if (beaut_device_ensure(sk, pk) != 0) return -1;
+    if (beaut_device_load(sk, pk) != 0) return -1;
     char oid[IDENTITY_HEX_LEN];
     beaut_device_id(oid, pk);
 
@@ -624,7 +624,7 @@ static void c_encode(char **a) { char o[PRIV_LINE_MAX + 8]; tsointsoin_encode(o,
 static void c_myid(char **a) {
     unsigned char sk[SIGN_SK], pk[SIGN_PK];
     char id[IDENTITY_HEX_LEN];
-    if (beaut_device_ensure(sk, pk) == 0) {
+    if (beaut_device_load(sk, pk) == 0) {
         beaut_device_id(id, pk);
         sodium_memzero(sk, sizeof(sk));
     } else if (a[0]) {
