@@ -235,9 +235,11 @@ matrix into C at the request boundary; until then a local user can still call
 The installed transport is a **hub/peer mirror of the signed log**, still one C
 binary; it keeps the P1/P2 guarantees without a second frame format:
 
-- `beaut hub [port]` — orchestration/router front door. It verifies every
-  incoming record with the cluster key + the origin's Ed25519 key, appends it
-  to its own `log.enc`, and rebroadcasts it to the other connected peers.
+- `beaut hub [port]` (also `beaut router --listen [addr:]port` or
+  `beaut orchestrator --listen …`) — orchestration/router front door. It
+  verifies every incoming record with the cluster key + the origin's Ed25519
+  key, appends it to its own `log.enc`, and rebroadcasts it to the other
+  connected peers.
 - `beaut peer <host> [port]` — tails this node's log and sends new records to
   the hub; verifies and appends records coming back. Run it next to `watch`
   on workers and clients.
