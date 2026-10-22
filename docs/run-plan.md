@@ -230,6 +230,51 @@ matrix into C at the request boundary; until then a local user can still call
 
 ---
 
+## 4.4 Implementation notes (2026-10-22)
+
+The installed transport is a **hub/peer mirror of the signed log**, still one C
+binary; it keeps the P1/P2 guarantees without a second frame format:
+
+- `beaut hub [port]` — orchestration/router front door. It verifies every
+  incoming record with the cluster key + the origin's Ed25519 key, appends it
+  to its own `log.enc`, and rebroadcasts it to the other connected peers.
+- `beaut peer <host> [port]` — tails this node's log and sends new records to
+  the hub; verifies and appends records coming back. Run it next to `watch`
+  on workers and clients.
+- `beaut push <host> [port]` — one-shot variant used by `run` when the target
+  is remote: sends the last local record and pulls the hub's recent ring, so a
+  task can leave the node even if no long-lived peer is running. Results are
+  delivered asynchronously; keep `peer` running to receive them live.
+- Wire record (newline-delimited, exactly the log line):
+  `outer_ts hex(XChaCha20-Poly1305(v2 \t ts \t id \t nonce \t sig \t worker \t action \t payload))`.
+- The signature covers
+  `beaut1\n ts \n id \n nonce \n worker \n action \n payload`; `id` is the
+  first 8 bytes of `sha256(device_pk)`, and the receiver resolves `id → pk`
+  from `priv.tsv` before checking the signature.
+- `log_read` drops anything unsigned, tampered, expired, or from an id below
+  level 1. `watch` additionally refuses `task` records below level 2.
+- The hub has a per-connection record rate (`BEAUT_HUB_RATE`, default 240/min)
+  and closes a peer after repeated invalid records. A 512-record in-memory
+  ring deduplicates relays and replays.
+- Abuse controls stay where the process runs: `watch` applies `nice`/kill by
+  the authenticated origin id, not by a forgeable hostname.
+
+Enrollment is still explicit: `beaut join` prints an id; the admin runs
+`beaut approve <id> <level> [pk]` (pending file or supplied public key), then
+copies the resulting `~/.beaut/etc/priv.tsv` to each node. Every node needs the
+same table to verify the others. Automatic `priv.tsv` distribution over the hub
+is not implemented yet.
+
+Verified on 2026-10-22 with two isolated state directories on one host:
+heartbeats propagated both ways, a task posted on B executed on A, its result
+returned to B, a forged/tampered record was dropped, and a valid level-1 task
+was refused with `EXEC_BLOCKED`.
+
+**Status:** P1 hub/peer and P2 per-request verification implemented; `priv`
+distribution and TLS/Noise remain future work.
+
+---
+
 ## 5. P3 — stegano transport
 
 `docs/stegano-plan.md` becomes another carrier for the exact same frames.

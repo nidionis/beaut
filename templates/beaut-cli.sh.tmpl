@@ -86,17 +86,21 @@ case "$cmd" in
     need_pw
     lvl=$(level_of)
     if [ "${lvl:-0}" -lt 1 ]; then echo "identity not approved (join, then ask an admin)" >&2; exit 1; fi
-    echo "level=$lvl | caps=${BEAUT_CAPS:-worker} | domain=${BEAUT_DOMAIN:-?} | ip=$(myip)" ;;
+    echo "level=$lvl | id=$("$T" myid "$BEAUT_PASSWORD") | caps=${BEAUT_CAPS:-worker} | domain=${BEAUT_DOMAIN:-?} | ip=$(myip)" ;;
 
   join)
     need_pw
     "$T" join "@ENV_DIR@/pending.tsv" "$BEAUT_PASSWORD" || { echo "join refused" >&2; exit 1; }
     echo "ask an admin: $NAME approve <id> <level>" ;;
 
+  pending)
+    need_pw
+    "$T" pending "@ENV_DIR@/pending.tsv" ;;
+
   approve)
     need_pw; need_level 3
-    [ "$#" -ge 1 ] || { echo "usage: $NAME approve <id> [level]" >&2; exit 1; }
-    "$T" approve "@ENV_DIR@/pending.tsv" "@ENV_DIR@/priv.tsv" "$1" "${2:-2}" ;;
+    [ "$#" -ge 1 ] || { echo "usage: $NAME approve <id> [level] [pk]" >&2; exit 1; }
+    "$T" approve "@ENV_DIR@/pending.tsv" "@ENV_DIR@/priv.tsv" "$1" "${2:-2}" "${3:-}" ;;
 
   ban)
     need_pw; need_level 3
@@ -119,9 +123,46 @@ case "$cmd" in
     need_pw; need_level 1
     "$T" heartbeat "$LOG" "$me" "$(myip)" "$BEAUT_PASSWORD" ;;
 
+  hub|router)
+    need_pw; need_level 1
+    has_cap router || has_cap orchestrator || { echo "$NAME: this node is neither router nor orchestrator" >&2; exit 1; }
+    "$T" hub "${1:-${BEAUT_PORT:-7331}}" "$BEAUT_PASSWORD" ;;
+
+  peer)
+    need_pw; need_level 1
+    [ -n "${1:-}" ] || { echo "usage: $NAME peer <host> [port]" >&2; exit 1; }
+    "$T" peer "$1" "${2:-${BEAUT_PORT:-7331}}" "$BEAUT_PASSWORD" ;;
+
+  push|send)
+    need_pw; need_level 1
+    [ -n "${1:-}" ] || { echo "usage: $NAME push <host> [port]" >&2; exit 1; }
+    "$T" push "$1" "${2:-${BEAUT_PORT:-7331}}" "$BEAUT_PASSWORD" ;;
+
+  steg)
+    need_pw; need_level 1
+    sub="${1:-}"; shift || true
+    case "$sub" in
+      pack)
+        [ -n "${1:-}" ] && [ -n "${2:-}" ] || { echo "usage: $NAME steg pack <file> <outdir> [addr]" >&2; exit 1; }
+        "$T" steg pack "$1" "$2" "${3:-$(myip)}" ;;
+      unpack)
+        [ -n "${1:-}" ] && [ -n "${2:-}" ] && [ -n "${3:-}" ] || { echo "usage: $NAME steg unpack <dir> <stamp> <out>" >&2; exit 1; }
+        "$T" steg unpack "$1" "$2" "$3" ;;
+      missing)
+        [ -n "${1:-}" ] && [ -n "${2:-}" ] || { echo "usage: $NAME steg missing <dir> <stamp>" >&2; exit 1; }
+        "$T" steg missing "$1" "$2" ;;
+      resend)
+        [ -n "${1:-}" ] && [ -n "${2:-}" ] && [ -n "${3:-}" ] || { echo "usage: $NAME steg resend <file> <outdir> <stamp> [package...]" >&2; exit 1; }
+        BEAUT_STEG_ADDR="${BEAUT_STEG_ADDR:-$(myip)}" "$T" steg resend "$@" ;;
+      inspect)
+        [ -n "${1:-}" ] || { echo "usage: $NAME steg inspect <file>" >&2; exit 1; }
+        "$T" steg inspect "$1" ;;
+      *) echo "usage: $NAME steg pack|unpack|missing|resend|inspect ..." >&2; exit 1 ;;
+    esac ;;
+
   peers)
     need_pw; need_level 1
-    printf 'name\tip\tload\tcores\tdomain\n'
+    printf 'name\tip\tload\tcores\tdomain\tid\n'
     "$T" peers "$LOG" "$BEAUT_PASSWORD" ;;
 
   pick)
@@ -166,7 +207,11 @@ case "$cmd" in
       "${best}::client=${me}::user=${USER:-unknown}::NPROC=$("$T" cores)::domain=${target_dom:-local}::stamp=${stamp}::${task}" \
       "$BEAUT_PASSWORD" || { echo "$NAME: could not post task" >&2; exit 1; }
     echo "posted -> ${best} (stamp ${stamp}${next:+, next ${next}})"
-    [ "$best" = "$(myip)" ] || echo "note: remote transport is P1; ${best} will see it after a sync" >&2 ;;
+    if [ "$best" != "$(myip)" ] && [ -n "${ORCHESTRATOR_IP:-}" ] && [ "${ORCHESTRATOR_IP}" != "127.0.0.1" ]; then
+      # one-shot relay so `run` works without a long-lived peer; a running
+      # `beaut peer` remains the way to receive results as they happen
+      ( timeout 5 "$T" push "$ORCHESTRATOR_IP" "${BEAUT_PORT:-7331}" "$BEAUT_PASSWORD" >/dev/null 2>&1 & )
+    fi ;;
 
   watch)
     need_pw; need_level 1
@@ -194,17 +239,20 @@ case "$cmd" in
       out=$("$T" read "$LOG" "$offset" "$BEAUT_PASSWORD" 2>"$err" || true)
       cnt=$(cat "$err" 2>/dev/null || echo 0); rm -f "$err"
 
-      while IFS=$'\t' read -r ts worker action payload; do
+      while IFS=$'\t' read -r ts worker action oid lvl payload; do
         [ -n "${worker:-}" ] || continue
         case "$action" in
           heartbeat)
             [ "$worker" = "$me" ] && continue
-            case " $seen_peers " in *" $worker "*) ;; *)
-              seen_peers="$seen_peers $worker"
-              alert "WORKER_CONNECT $worker ${payload%%:*}" ;;
+            case " $seen_peers " in *" $oid "*) ;; *)
+              seen_peers="$seen_peers $oid"
+              alert "WORKER_CONNECT $worker ${payload%%:*} id=$oid" ;;
             esac ;;
           task)
             [ "${ts:-0}" -ge "$start_ts" ] || continue
+            if [ "${lvl:-0}" -lt 2 ]; then
+              alert "EXEC_BLOCKED level=$lvl origin=$oid (run needs level 2)"; continue
+            fi
 
             # payload: <target>::client=..::user=..::NPROC=..::domain=..::stamp=..::<cmd>
             target="${payload%%::*}"; rest="${payload#*::}"
@@ -220,6 +268,7 @@ case "$cmd" in
               esac
             done
             cmdline="$rest"
+            client="$oid"
 
             case "$target" in
               "$(myip)"|local|'*') ;;
@@ -253,14 +302,22 @@ case "$cmd" in
 usage: $NAME <cmd> [args]
   init                 verify identity + show caps/domain
   join                 request an identity (writes pending.tsv)
-  approve <id> [lvl]   approve/update a pending identity (1..3, default 2)
+  pending              list local pending identities (id pk age)
+  approve <id> [lvl] [pk]  approve/update an identity (1..3, default 2)
   ban <id>             remove an identity
   priv dedupe          collapse duplicate priv.tsv/pending.tsv lines
   heartbeat            post one heartbeat
-  peers                list live peers (name ip load cores domain)
+  peers                list live peers (name ip load cores domain id)
   pick [domain]        show the scheduler's best/next worker
   run <domain|ip> <cmd> post a task (self when this is the only worker)
   watch                worker loop: heartbeat + execute local tasks
+  hub [port]           TCP hub (orchestrator/router front door)
+  peer <host> [port]   mirror this node's signed log to a hub
+  push <host> [port]   one-shot: send the last record, pull recent hub records
+  steg pack <file> <dir> [addr]        split a file into PNG packages
+  steg unpack <dir> <stamp> <out>      reassemble and verify packages
+  steg missing <dir> <stamp>           list missing package numbers
+  steg resend <file> <dir> <stamp> [n] regenerate packages (default all)
   retain               prune/archive the log
 H
     ;;

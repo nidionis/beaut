@@ -2,7 +2,7 @@
 #define FT_H
 #include <stdbool.h>
 #include <stddef.h>
-#define BLANK_CHARS " \t\r\n-_-"
+#define BLANK_CHARS " \t\r\n"
 #define HEXBUF(n) ((n) * 2 + 1)
 #define BEAUT_NAME_MAX 128
 #define IP_MAX 64

@@ -10,13 +10,13 @@
 
 CC      ?= gcc
 CFLAGS  ?= -O2 -Wall -Wextra -Isrc
-LDLIBS  = -lsodium
+LDLIBS  = -lsodium -lz
 
 NAME    ?= beaut
 OUT      = bin/$(NAME)
 BIN_DIR ?= /usr/local/bin
 
-ORCH_SRCS   = src/orch.c src/crypt.c src/ft.c src/tsointsoin.c
+ORCH_SRCS   = src/orch.c src/net.c src/pngsteg.c src/crypt.c src/ft.c src/tsointsoin.c
 ROUTER_SRCS = src/router.c src/ft.c
 
 .PHONY: all $(NAME) beaut-router install clean

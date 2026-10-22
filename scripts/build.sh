@@ -31,22 +31,27 @@ have_sodium() {
   pkg-config --exists libsodium 2>/dev/null && return 0
   [ -f /usr/include/sodium.h ] || [ -f /usr/include/sodium/sodium.h ]
 }
-if ! command -v gcc >/dev/null || ! command -v make >/dev/null || ! have_sodium; then
-  [ "$(id -u)" = 0 ] || die "missing gcc/make/libsodium-dev — install them (needs root)"
+have_zlib() {
+  pkg-config --exists zlib 2>/dev/null && return 0
+  [ -f /usr/include/zlib.h ]
+}
+if ! command -v gcc >/dev/null || ! command -v make >/dev/null || ! have_sodium || ! have_zlib; then
+  [ "$(id -u)" = 0 ] || die "missing gcc/make/libsodium-dev/zlib1g-dev — install them (needs root)"
   log "installing deps"
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update -qq
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-      gcc make pkg-config libssl-dev libsodium-dev tar
+      gcc make pkg-config libssl-dev libsodium-dev zlib1g-dev tar
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y -q gcc make pkgconf-pkg-config openssl-devel libsodium-devel tar
+    dnf install -y -q gcc make pkgconf-pkg-config openssl-devel libsodium-devel zlib-devel tar
   elif command -v apk >/dev/null 2>&1; then
-    apk add --no-cache gcc musl-dev make pkgconf openssl-dev libsodium-dev tar
+    apk add --no-cache gcc musl-dev make pkgconf openssl-dev libsodium-dev zlib-dev tar
   else
     die "unsupported package manager"
   fi
 fi
 have_sodium || die "libsodium headers still missing"
+have_zlib || die "zlib headers still missing"
 
 # ── build ──────────────────────────────────────────────────────────────────
 if [ "$FORCE" = 1 ]; then

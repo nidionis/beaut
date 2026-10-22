@@ -7,10 +7,14 @@ bool is_blank(char c) {
     return false;
 }
 size_t trim_blanks(char *s) {
-    char *r = s, *w = s;
-    while (*r) { if (!is_blank(*r)) *w++ = *r; r++; }
-    *w = 0;
-    return (size_t)(w - s);
+    char *a = s;
+    while (*a && is_blank(*a)) a++;
+    char *b = s + strlen(s);
+    while (b > a && is_blank(b[-1])) b--;
+    size_t n = (size_t)(b - a);
+    if (a != s) memmove(s, a, n);
+    s[n] = 0;
+    return n;
 }
 int split_fields(char *line, char delim, char **f, int max) {
     int n = 0; char *p = line;

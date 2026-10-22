@@ -1,4 +1,4 @@
-# Stegano carrier — plan v2 (pixel-domain, no implementation)
+# Stegano carrier — plan v2 (implemented as `beaut steg`)
 
 Transport disguise for beaut envelopes: every package is a **valid RGBA PNG**,
 64×64 px, with the payload spread over **all channel bytes** (R, G, B, A).
@@ -6,6 +6,22 @@ Encryption is a standard AEAD; the image is deterministic — **no RNG, no seed,
 no noise**. Packages are numbered and the transfer ends with an explicit
 `EOP`; a receiver can ask for gaps by `stamp` and the sender regenerates the
 exact same bytes.
+
+Implementation: `src/pngsteg.c` (`PNG_W=64`, `PNG_H=64`, `PNG_OFFSET=64`,
+`STEG_CHUNK_MAX=16214`). The shipped commands are:
+
+```sh
+beaut steg pack <file> <outdir> [addr]
+beaut steg unpack <dir> <stamp> <out>
+beaut steg missing <dir> <stamp>
+beaut steg resend <file> <outdir> <stamp> [package...]
+beaut steg inspect <file>
+```
+
+The actual package name follows the user-facing contract
+`<date>-<addr>-package.<counter>.png`; the 16-character stamp is carried in the
+package header (its first 8 chars are the date), not in the filename. The
+`STAMP`/`COUNTER` sketch in §0 is therefore superseded by this naming.
 
 ```
 beaut envelope → AEAD → package N/M → RGBA channels → PNG (.png)
@@ -46,6 +62,55 @@ CHANNELS  = PIXEL_SIZE / COLOR_SIZE        # 4 (R,G,B,A)
 PIXELS    = W * H                          # 4,096
 CAPACITY  = PIXELS * PIXEL_SIZE - PNG_OFFSET
 ```
+
+---
+
+## 0b. As implemented
+
+Pixel byte stream (row-major, R,G,B,A; PNG filter byte per row is framing, not
+payload):
+
+```
+[0 .. 64)                  deterministic filler
+[64 .. 130)                package header (66 bytes)
+[130 .. 130+CLEN)          nonce(24) || XChaCha20-Poly1305(header AAD, chunk)
+[130+CLEN .. 16384)        deterministic filler
+```
+
+Header (all integers big-endian):
+
+| offset | size | field |
+|---|---|---|
+| 0 | 4 | `BSTG` |
+| 4 | 1 | version `1` |
+| 5 | 1 | flags, bit 0 = EOP |
+| 6 | 16 | stamp (date `YYYYMMDD` + 8 hex) |
+| 22 | 4 | seq (0-based) |
+| 26 | 4 | total packages |
+| 30 | 4 | CLEN (nonce + ciphertext + tag) |
+| 34 | 32 | SHA-256 of the plaintext chunk |
+| 66 | … | encrypted blob |
+
+- `STEG_CHUNK_MAX = 16320 - 66 - 24 - 16 = 16214` bytes per package.
+- AAD is the 66-byte header, so seq/total/EOP/stamp/size are authenticated.
+- Filler is `BLAKE2b(key=cluster_key, "beaut-steg-filler|<stamp>|<seq>|<block>")`;
+  no RNG and no seed.
+- The AEAD nonce is also deterministic:
+  `BLAKE2b(key, "beaut-steg-nonce|<stamp>|<seq>|<sha256(chunk)>")`. Re-sending
+  an unchanged package is byte-for-byte identical; a changed chunk gets a new
+  nonce.
+- PNG is 8-bit RGBA, non-interlaced, filter 0, zlib IDAT, with CRCs. `unpack`
+  verifies CRC, header AAD, AEAD tag, SHA-256 and EOP before writing the
+  output; it refuses partial transfers (exit 2 with `missing=…`).
+- `STEGANO_MAX_SIZE` (default 512 MiB) is checked before packing and before
+  writing an unpacked transfer.
+- `resend <stamp>` regenerates selected 1-based package numbers from the source
+  file; `missing <stamp>` prints the gap list.
+
+Verified: valid 64×64 RGBA PNG (`file`), 40 000-byte round trip across three
+packages, empty file, exact 16 214/16 215-byte boundaries, deterministic
+re-pack, byte-identical `resend`, missing-package reporting, wrong password
+rejection, and a pixel-level tamper that keeps CRC valid but fails AEAD.
 
 ---
 

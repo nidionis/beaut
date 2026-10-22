@@ -103,11 +103,21 @@ do_install() {
   conf_set "$CONF" BEAUT_RATE_LIMIT      "${BEAUT_RATE_LIMIT:-60}"
   conf_set "$CONF" BEAUT_ABUSE_ACTION    "${BEAUT_ABUSE_ACTION:-nice}"
   conf_set "$CONF" SCHEDULER_RESERVE_NODES "${SCHEDULER_RESERVE_NODES:-0}"
+  conf_set "$CONF" BEAUT_PORT             "${BEAUT_PORT:-7331}"
+  conf_set "$CONF" BEAUT_HUB_RATE         "${BEAUT_HUB_RATE:-240}"
+  conf_set "$CONF" STEGANO_MAX_SIZE       "${STEGANO_MAX_SIZE:-536870912}"
   conf_set "$CONF" ORCHESTRATOR_IP   "$orch_ip"
 
   # the C tool reads these from the environment
   export BEAUT_STATE_DIR="$STATE_DIR" BEAUT_ETC_DIR="$ENV_DIR"
+  export BEAUT_DEVICE_KEY="$ENV_DIR/device.key"
   export BEAUT_IF
+
+  # P2: create this device's Ed25519 key and migrate the legacy
+  # password-derived identity if present (preserves the level).
+  local mig
+  mig="$("$TOOL" migrate "$BEAUT_PASSWORD" 2>/dev/null || true)"
+  [ -n "$mig" ] && info "$mig"
 
   # runtime scripts
   render templates/beaut-lib.sh.tmpl "$LIB_DIR/beaut-lib"
