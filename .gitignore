@@ -11,6 +11,9 @@ cluster.env
 # local config (user-edited, do not commit)
 config.env
 
+# personal environment checkout, exposed through the `svr` symlink
+.svr/
+
 # macOS / editors
 .DS_Store
 .idea/
