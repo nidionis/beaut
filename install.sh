@@ -1,249 +1,241 @@
 #!/usr/bin/env bash
-# install.sh — beaut single entry point (the only user-facing script besides config.env)
+# install.sh — one-command bootstrap for beaut.
 #
-#   ./install.sh                    install using config.env
-#   ./install.sh --role R [IP]      non-interactive install (comma list: orchestrator,router,worker,client)
-#   ./install.sh --status           show what is installed and whether it runs
-#   ./install.sh --uninstall        remove the installed CLI (state is kept)
-#   ./install.sh --serve [PORT]     publish a bootstrap tarball (curl | bash)
-#   ./install.sh deploy [ORCH_IP]   SFTP + install on the orchestrator via ssh
-#   ./install.sh --help
+#   sudo ./install.sh --roles hub --domain beaut.example.org     # system install
+#   ./install.sh --user --roles client                            # per-user install
 #
-# Required in config.env: BEAUT_PASSWORD, ROLE.
-# Layout (all user-writable, no root needed):
-#   $BIN_DIR/$NAME               the CLI          (default ~/.bin, added to ~/.bashrc)
-#   $PREFIX/lib/$NAME/$NAME-bin  the C tool       (internal)
-#   $PREFIX/lib/$NAME/beaut-lib  shared shell lib
-#   $PREFIX/etc/$NAME.conf       config + runtime keys (mode 0600)
-#   $PREFIX/var/                 log.enc, connections.log, archive/
+# System install: /usr/local/share/beaut/{bin,lib,docs}, /usr/local/bin/beaut,
+# /etc/beaut/config.env (root:beaut 0640 — root edits, the service reads),
+# `beaut` system user owning /var/lib/beaut, beaut.service enabled+started.
+# User install:   ~/.local/share/beaut, ~/.local/bin/beaut, ~/.config/beaut/config.env,
+# systemd --user unit. Re-running is idempotent; an existing config.env is kept.
+#
+# For tests the system layout can be redirected without touching the host:
+#   BEAUT_INSTALL_CONF_DIR, BEAUT_INSTALL_STATE_DIR, BEAUT_INSTALL_UNIT_DIR,
+#   BEAUT_INSTALL_USER (service account; defaults to beaut).
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$HERE"
-# shellcheck source=scripts/lib.sh
-. "$HERE/scripts/lib.sh"
 
-detect_if() {
-  ip route get 1.1.1.1 2>/dev/null \
-    | awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}' \
-    || echo lo
+SRC="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+BEAUT_ROOT="$SRC"
+# shellcheck source=lib/common.sh
+. "$SRC/lib/common.sh"
+
+usage() {
+    cat <<EOF
+usage: install.sh [--roles hub,worker,client] [--domain NAME] [--user]
+                  [--prefix DIR] [--no-service] [--deps] [--uninstall]
+
+  --roles LIST   roles for this host (default: client)
+  --domain NAME  hub domain written to config.env (default: localhost; [A-Za-z0-9.-])
+  --user         install for the current user only (no root, systemd --user)
+  --prefix DIR   install prefix (default: /usr/local, or ~/.local with --user)
+  --no-service   do not install/enable the systemd unit
+  --deps         also try to install dependencies with the system package manager
+  --uninstall    remove installed files and the unit (config and state are kept)
+EOF
 }
 
-# ensure_path — add $BIN_DIR to ~/.bashrc once (idempotent, no duplicate lines)
-ensure_path() {
-  local rc="${BASHRC:-$HOME/.bashrc}" line
-  line="export PATH=\"$BIN_DIR:\$PATH\""
-  if grep -qF "$BIN_DIR" "$rc" 2>/dev/null; then
-    info "$BIN_DIR already referenced in $rc"
-    return 0
-  fi
-  touch "$rc"
-  printf '\n# beaut: make %s available\n%s\n' "$NAME" "$line" >> "$rc"
-  info "PATH entry added to $rc"
-}
+ROLES_ARG="client"; DOMAIN_ARG="localhost"; USER_MODE=0; PREFIX=""; SERVICE=1; DEPS=0; UNINSTALL=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --roles)   ROLES_ARG="$2"; shift 2 ;;
+        --domain)  DOMAIN_ARG="$2"; shift 2 ;;
+        --user)    USER_MODE=1; shift ;;
+        --prefix)  PREFIX="$2"; shift 2 ;;
+        --no-service) SERVICE=0; shift ;;
+        --deps)    DEPS=1; shift ;;
+        --uninstall) UNINSTALL=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) die "unknown option: $1" ;;
+    esac
+done
 
-do_install() {
-  local role="$1" orch_ip="${2:-}" domain
+if [ "$USER_MODE" = 1 ]; then
+    PREFIX="${PREFIX:-$HOME/.local}"
+    CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/beaut"
+    STATE="${XDG_STATE_HOME:-$HOME/.local/state}/beaut"
+    UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+    SYSTEMCTL="systemctl --user"
+    SVC_USER="$(id -un)"
+else
+    [ "$(id -u)" = 0 ] || die "system install needs root (or use --user)"
+    PREFIX="${PREFIX:-/usr/local}"
+    CONF_DIR="${BEAUT_INSTALL_CONF_DIR:-/etc/beaut}"
+    STATE="${BEAUT_INSTALL_STATE_DIR:-/var/lib/beaut}"
+    UNIT_DIR="${BEAUT_INSTALL_UNIT_DIR:-/etc/systemd/system}"
+    SYSTEMCTL="systemctl"
+    SVC_USER="${BEAUT_INSTALL_USER:-beaut}"
+fi
+SHARE="$PREFIX/share/beaut"
+BIN="$PREFIX/bin"
 
-  if [ -f config.env ]; then load_config config.env; fi
-  ROLE="$(norm_roles "$role")"
-  validate_roles "$ROLE" || die "unknown ROLE: $role (orchestrator|router|worker|client)"
-  if role_has "$ROLE" orchestrator; then orch_ip="127.0.0.1"; fi
-  [ -n "$orch_ip" ] || die "$ROLE needs an orchestrator IP (arg 2 or IP_ORCHESTRATOR in config.env)"
-  : "${BEAUT_PASSWORD:?BEAUT_PASSWORD is required}"
-  export ROLE ORCH_IP="$orch_ip"
-
-  # advertised domain: router → vm, worker → worker, otherwise first cap
-  if role_has "$ROLE" router; then domain=vm
-  elif role_has "$ROLE" worker; then domain=worker
-  else domain="$(printf '%s' "$ROLE" | cut -d' ' -f1)"
-  fi
-  export BEAUT_DOMAIN="$domain"
-
-  resolve_paths
-  BEAUT_IF="${BEAUT_IF:-$(detect_if)}"
-  log "install $NAME ($ROLE) -> $PREFIX"
-
-  bash "$HERE/scripts/build.sh"
-
-  install -d -m 0755 "$BIN_DIR" "$LIB_DIR" "$ENV_DIR"
-  install -d -m 0755 "$STATE_DIR" "$STATE_DIR/archive"
-
-  # migrate from the old $PREFIX/bin layout
-  if [ "$BIN_DIR" != "$PREFIX/bin" ] && [ -f "$PREFIX/bin/$NAME" ]; then
-    rm -f "$PREFIX/bin/$NAME"
-    rmdir "$PREFIX/bin" 2>/dev/null || true
-    info "migrated old $PREFIX/bin/$NAME"
-  fi
-
-  # the C tool lives outside PATH: only $NAME is exposed
-  install -m 0755 "$HERE/bin/beaut" "$TOOL"
-
-  # config carries the password => 0600
-  install -m 0600 config.env "$CONF"
-  conf_set "$CONF" BEAUT_NAME      "$NAME"
-  conf_set "$CONF" BEAUT_PREFIX    "$PREFIX"
-  conf_set "$CONF" BEAUT_BIN_DIR   "$BIN_DIR"
-  conf_set "$CONF" BEAUT_LIB_DIR   "$LIB_DIR"
-  conf_set "$CONF" BEAUT_ENV_DIR   "$ENV_DIR"
-  conf_set "$CONF" BEAUT_STATE_DIR "$STATE_DIR"
-  conf_set "$CONF" BEAUT_ETC_DIR   "$ENV_DIR"
-  conf_set "$CONF" ROLE            "$ROLE"
-  conf_set "$CONF" BEAUT_CAPS      "$ROLE"
-  conf_set "$CONF" BEAUT_LOCAL_ORCH 1
-  conf_set "$CONF" BEAUT_DOMAIN    "$domain"
-  conf_set "$CONF" BEAUT_IF        "$BEAUT_IF"
-  conf_set "$CONF" BEAUT_HEARTBEAT_S "${BEAUT_HEARTBEAT_S:-30}"
-  conf_set "$CONF" BEAUT_POLL_S      "${BEAUT_POLL_S:-3}"
-  conf_set "$CONF" BEAUT_STALE_S     "${BEAUT_STALE_S:-90}"
-  conf_set "$CONF" BEAUT_ALLOW_EXEC  "${BEAUT_ALLOW_EXEC:-0}"
-  conf_set "$CONF" BEAUT_EXEC_DOMAINS "${BEAUT_EXEC_DOMAINS:-}"
-  conf_set "$CONF" BEAUT_EXEC_TIMEOUT_S "${BEAUT_EXEC_TIMEOUT_S:-300}"
-  conf_set "$CONF" BEAUT_NICE            "${BEAUT_NICE:-10}"
-  conf_set "$CONF" BEAUT_MAX_CONCURRENT  "${BEAUT_MAX_CONCURRENT:-1}"
-  conf_set "$CONF" BEAUT_RATE_LIMIT      "${BEAUT_RATE_LIMIT:-60}"
-  conf_set "$CONF" BEAUT_ABUSE_ACTION    "${BEAUT_ABUSE_ACTION:-nice}"
-  conf_set "$CONF" SCHEDULER_RESERVE_NODES "${SCHEDULER_RESERVE_NODES:-0}"
-  conf_set "$CONF" BEAUT_PORT             "${BEAUT_PORT:-7331}"
-  conf_set "$CONF" BEAUT_HUB_RATE         "${BEAUT_HUB_RATE:-240}"
-  conf_set "$CONF" STEGANO_MAX_SIZE       "${STEGANO_MAX_SIZE:-536870912}"
-  conf_set "$CONF" ORCHESTRATOR_IP   "$orch_ip"
-
-  # the C tool reads these from the environment
-  export BEAUT_STATE_DIR="$STATE_DIR" BEAUT_ETC_DIR="$ENV_DIR"
-  export BEAUT_DEVICE_KEY="$ENV_DIR/device.key"
-  export BEAUT_IF
-
-  # P2: create this device's Ed25519 key and migrate the legacy
-  # password-derived identity if present (preserves the level).
-  local mig
-  mig="$("$TOOL" migrate "$BEAUT_PASSWORD" 2>/dev/null || true)"
-  [ -n "$mig" ] && info "$mig"
-
-  # runtime scripts
-  render templates/beaut-lib.sh.tmpl "$LIB_DIR/beaut-lib"
-  chmod 0644 "$LIB_DIR/beaut-lib"
-  render templates/beaut-cli.sh.tmpl "$BIN_DIR/$NAME"
-  chmod 0755 "$BIN_DIR/$NAME"
-
-  ensure_path
-
-  # first identity: bootstrap the admin if priv.tsv is empty
-  if [ ! -s "$ENV_DIR/priv.tsv" ]; then
-    log "bootstrapping admin identity"
-    local id
-    id="$("$TOOL" myid "$BEAUT_PASSWORD")"
-    "$TOOL" join "$ENV_DIR/pending.tsv" "$BEAUT_PASSWORD" >/dev/null 2>&1 || true
-    if [ -n "$id" ]; then
-      "$TOOL" approve "$ENV_DIR/pending.tsv" "$ENV_DIR/priv.tsv" "$id" 3
-      chmod 0600 "$ENV_DIR/priv.tsv"
-      log "admin id=$id level=3"
-    fi
-  fi
-
-  local lvl_now
-  lvl_now="$("$TOOL" auth "$BEAUT_PASSWORD" 2>/dev/null || echo 0)"
-  if [ "${lvl_now:-0}" -lt 1 ]; then
-    warn "identity is not approved on this node"
-    info "here:  $NAME join"
-    info "admin: $NAME approve <id> <level> [pk], then copy ~/.beaut/etc/priv.tsv here"
-  else
-    info "identity level=$lvl_now"
-  fi
-
-  echo
-  log "done — $BIN_DIR/$NAME"
-  info "config: $CONF (0600)"
-  info "state:  $STATE_DIR"
-  case ":$PATH:" in
-    *":$BIN_DIR:"*) ;;
-    *) warn "$BIN_DIR is not in this shell's PATH — run: exec bash -l" ;;
-  esac
-}
-
-do_status() {
-  source_config
-  resolve_paths
-  local c=""
-  if [ -r "$CONF" ]; then c="$CONF"; fi
-  local role="" allow="" domain="" caps=""
-  if [ -n "$c" ]; then
-    role="$(sed -n 's/^ROLE=//p' "$c" | head -1 | sed 's/#.*//; s/["[:space:]]//g')"
-    caps="$(sed -n 's/^BEAUT_CAPS=//p' "$c" | head -1 | sed 's/#.*//; s/["[:space:]]//g')"
-    domain="$(sed -n 's/^BEAUT_DOMAIN=//p' "$c" | head -1 | sed 's/#.*//; s/["[:space:]]//g')"
-    allow="$(sed -n 's/^BEAUT_ALLOW_EXEC=//p' "$c" | head -1 | sed 's/#.*//; s/["[:space:]]//g')"
-  fi
-  printf '%-9s %s\n' "name:" "$NAME"
-  printf '%-9s %s\n' "role:" "${role:-?} (caps=${caps:-?}, domain=${domain:-?}, allow_exec=${allow:-?})"
-  printf '%-9s %s %s\n' "cli:" "$BIN_DIR/$NAME" "$([ -x "$BIN_DIR/$NAME" ] && echo ok || echo MISSING)"
-  printf '%-9s %s %s\n' "tool:" "$TOOL" "$([ -x "$TOOL" ] && echo ok || echo MISSING)"
-  printf '%-9s %s\n' "config:" "$CONF"
-  printf '%-9s %s\n' "state:" "$STATE_DIR"
-  if pgrep -f -- "$BIN_DIR/$NAME watch" >/dev/null 2>&1; then
-    printf '%-9s %s\n' "process:" "watch running"
-  else
-    printf '%-9s %s\n' "process:" "not running (beaut watch)"
-  fi
-  if [ -f "$STATE_DIR/connections.log" ]; then
-    printf '%-9s\n' "recent:"
-    tail -n 5 "$STATE_DIR/connections.log" | sed 's/^/          /'
-  fi
-  command -v "$NAME" >/dev/null 2>&1 \
-    || warn "$NAME is not in PATH (add $BIN_DIR)"
-}
-
-do_uninstall() {
-  source_config
-  resolve_paths
-  pkill -TERM -f -- "$BIN_DIR/$NAME watch" 2>/dev/null || true
-  sleep 1
-  pkill -f "$TOOL" 2>/dev/null || true
-  rm -f "$BIN_DIR/$NAME" "$TOOL" "$LIB_DIR/beaut-lib"
-  rmdir "$LIB_DIR" 2>/dev/null || true
-  if [ "$(id -u)" = 0 ]; then
-    rm -f /etc/systemd/system/beaut-*.service /etc/systemd/system/beaut-*.timer
-    systemctl daemon-reload 2>/dev/null || true
-  fi
-  log "removed $NAME and its tool — state kept in $STATE_DIR"
-}
-
-do_serve() {
-  local port="${1:-8080}" d ip
-  d="$(mktemp -d)"
-  cp install.sh config.env Makefile "$d/"
-  cp -r scripts templates src "$d/"
-  tar czf "$d/beaut.tgz" -C "$d" install.sh config.env Makefile scripts templates src
-  ( cd "$d" && sha256sum beaut.tgz > beaut.tgz.sha256 && chmod 644 ./* 2>/dev/null || true )
-  ip="$(local_ip)"
-  echo "$ip" > "$d/orch.host"
-  log "serving on :$port — sha256 $(cut -d' ' -f1 "$d/beaut.tgz.sha256" | cut -c1-16)…"
-  cat <<EOT
-
-  on the new node (verify before running):
-    curl -fsSLO http://$ip:$port/beaut.tgz
-    curl -fsSL  http://$ip:$port/beaut.tgz.sha256 | sha256sum -c -
-    tar xzf beaut.tgz && ./install.sh
-
-EOT
-  exec python3 -m http.server "$port" --directory "$d"
-}
-
-case "${1:-}" in
-  --role)
-    shift
-    [ "$#" -ge 1 ] || die "usage: $0 --role ROLE [ORCH_IP]"
-    do_install "$1" "${2:-}"
-    ;;
-  --status)    do_status ;;
-  --uninstall) do_uninstall ;;
-  --serve)     shift; do_serve "$@" ;;
-  deploy)      shift; bash "$HERE/scripts/deploy.sh" "$@" ;;
-  --help|-h)   sed -n '2,18p' "$0"; exit 0 ;;
-  "")
-    load_config config.env
-    do_install "$ROLE" "${IP_ORCHESTRATOR:-}"
-    ;;
-  *)
-    load_config config.env
-    do_install "$ROLE" "${IP_ORCHESTRATOR:-}"
-    ;;
+# Validate inputs before they reach the config (which is sourced as bash).
+for r in ${ROLES_ARG//,/ }; do
+    case "$r" in hub|worker|client) ;; *) die "unknown role: $r" ;; esac
+done
+[[ "$DOMAIN_ARG" =~ ^[A-Za-z0-9.-]+$ ]] || die "--domain may only contain [A-Za-z0-9.-]: '$DOMAIN_ARG'"
+[[ "$SVC_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "invalid service user name: $SVC_USER"
+case "$STATE$PREFIX$CONF_DIR" in
+    *[\"\$\`\\]*|*$'\n'*) die "paths must not contain quotes, \$, backticks, backslashes or newlines" ;;
 esac
+[[ "$STATE" = /* ]] && [[ "$PREFIX" = /* ]] && [[ "$CONF_DIR" = /* ]] || die "paths must be absolute"
+
+if [ "$UNINSTALL" = 1 ]; then
+    if [ "$SERVICE" = 1 ] && have systemctl; then
+        $SYSTEMCTL disable --now beaut.service 2>/dev/null || true
+        rm -f "$UNIT_DIR/beaut.service"; $SYSTEMCTL daemon-reload 2>/dev/null || true
+    fi
+    rm -rf "$SHARE"; rm -f "$BIN/beaut"
+    info "removed $SHARE and $BIN/beaut (kept $CONF_DIR and $STATE)"
+    exit 0
+fi
+
+# ---- dependencies -----------------------------------------------------------
+role_deps() {
+    local d="bash curl ssh"
+    case " ${ROLES_ARG//,/ } " in *" hub "*)    d="$d socat msmtp mpop" ;; esac
+    case " ${ROLES_ARG//,/ } " in *" worker "*) d="$d autossh ssh-keygen" ;; esac
+    case " ${ROLES_ARG//,/ } " in *" client "*) d="$d ssh" ;; esac
+    printf '%s\n' "$d"
+}
+# role_pkgs — distro package names for the tools role_deps needs
+role_pkgs() {
+    local p="curl" ssh="openssh-client"
+    { have apk || have pacman; } && ssh="openssh"
+    p="$p $ssh"
+    case " ${ROLES_ARG//,/ } " in *" hub "*)    p="$p socat msmtp mpop" ;; esac
+    case " ${ROLES_ARG//,/ } " in *" worker "*) p="$p autossh" ;; esac
+    printf '%s\n' "$p"
+}
+if [ "$DEPS" = 1 ]; then
+    pk=""
+    if   have apt-get; then apt-get update -qq || true; pk="apt-get install -y -qq"
+    elif have dnf;     then pk="dnf install -y"
+    elif have pacman;  then pk="pacman -S --noconfirm --needed"
+    elif have apk;     then pk="apk add"
+    fi
+    if [ -n "$pk" ]; then
+        info "installing packages for roles '$ROLES_ARG': $(role_pkgs)"
+        # shellcheck disable=SC2046
+        $pk $(role_pkgs) || warn "dependency install failed, continuing"
+    else
+        warn "no known package manager, skipping --deps"
+    fi
+fi
+missing=""
+for c in $(role_deps); do have "$c" || missing="$missing $c"; done
+[ -z "$missing" ] || warn "missing tools for roles '$ROLES_ARG':$missing (re-run with --deps or install them)"
+
+# ---- files ------------------------------------------------------------------
+umask 022
+mkdir -p "$SHARE" "$BIN"
+rm -rf "$SHARE/bin" "$SHARE/lib" "$SHARE/docs"
+cp -r "$SRC/bin" "$SRC/lib" "$SHARE/"
+[ -d "$SRC/docs" ] && cp -r "$SRC/docs" "$SHARE/"
+cp "$SRC/config.env.example" "$SHARE/config.env.example"
+chmod 755 "$SHARE/bin/beaut"
+ln -sfn "$SHARE/bin/beaut" "$BIN/beaut"
+info "installed $SHARE, $BIN/beaut"
+
+# ---- service user + state ------------------------------------------------------
+if [ "$USER_MODE" = 0 ]; then
+    if ! getent group "$SVC_USER" >/dev/null 2>&1; then
+        if have groupadd; then
+            groupadd --system "$SVC_USER"
+        elif have addgroup; then
+            # BusyBox/Alpine uses addgroup -S for a system group.
+            addgroup -S "$SVC_USER"
+        else
+            die "cannot create group $SVC_USER (no groupadd/addgroup)"
+        fi
+    fi
+    if ! id -u "$SVC_USER" >/dev/null 2>&1; then
+        if have useradd; then useradd --system --gid "$SVC_USER" --home-dir "$STATE" --shell /usr/sbin/nologin "$SVC_USER"
+        elif have adduser; then adduser -S -D -H -h "$STATE" -s /sbin/nologin -G "$SVC_USER" "$SVC_USER"
+        else die "cannot create user $SVC_USER (no useradd/adduser)"; fi
+        info "created system user $SVC_USER"
+    fi
+fi
+mkdir -p "$STATE"; chmod 700 "$STATE"
+[ "$USER_MODE" = 1 ] || chown "$SVC_USER:$SVC_USER" "$STATE"
+
+# ---- config ------------------------------------------------------------------
+# render_config — example with DOMAIN/ROLES/STATE_DIR replaced, line by line
+# (values were validated above, so they are safe inside double quotes).
+render_config() {
+    local line
+    while IFS= read -r line; do
+        case "$line" in
+            DOMAIN=*)    printf 'DOMAIN="%s"%s\n'    "$DOMAIN_ARG" "${line#*\"*\"}" ;;
+            ROLES=*)     printf 'ROLES="%s"%s\n'     "$ROLES_ARG"  "${line#*\"*\"}" ;;
+            STATE_DIR=*) printf 'STATE_DIR="%s"%s\n' "$STATE"      "${line#*\"*\"}" ;;
+            *) printf '%s\n' "$line" ;;
+        esac
+    done < "$SRC/config.env.example"
+}
+mkdir -p "$CONF_DIR"
+if [ -e "$CONF_DIR/config.env" ]; then
+    info "keeping existing $CONF_DIR/config.env"
+else
+    umask 077
+    render_config > "$CONF_DIR/config.env"
+    umask 022
+    info "wrote $CONF_DIR/config.env (roles=$ROLES_ARG domain=$DOMAIN_ARG)"
+fi
+if [ "$USER_MODE" = 1 ]; then
+    chmod 700 "$CONF_DIR"; chmod 600 "$CONF_DIR/config.env"
+else
+    # root owns the config (it is sourced as code; the service must not be able
+    # to rewrite it); the service group may read it. Root and the service user
+    # therefore both pass beaut's ownership check.
+    chown "root:$SVC_USER" "$CONF_DIR" "$CONF_DIR/config.env"
+    chmod 750 "$CONF_DIR"; chmod 640 "$CONF_DIR/config.env"
+fi
+
+# ---- sanity: root (admin CLI) and the service user must both load the config ----
+BEAUT_CONFIG="$CONF_DIR/config.env" "$BIN/beaut" roles >/dev/null \
+    || die "installed beaut failed to load config as $(id -un)"
+if [ "$USER_MODE" = 0 ] && [ "$SVC_USER" != "$(id -un)" ]; then
+    if have runuser; then
+        runuser -u "$SVC_USER" -- env BEAUT_CONFIG="$CONF_DIR/config.env" "$BIN/beaut" status >/dev/null \
+            || die "service user $SVC_USER cannot load config/state ($CONF_DIR, $STATE)"
+    elif have su; then
+        su -s /bin/sh "$SVC_USER" -c "BEAUT_CONFIG='$CONF_DIR/config.env' '$BIN/beaut' status" >/dev/null \
+            || die "service user $SVC_USER cannot load config/state ($CONF_DIR, $STATE)"
+    else
+        warn "no runuser/su: skipped service-user config check"
+    fi
+fi
+
+# ---- systemd -----------------------------------------------------------------
+if [ "$SERVICE" = 1 ]; then
+    if ! have systemctl; then
+        warn "systemd not found: start '$BIN/beaut daemon' with your init of choice"
+    else
+        mkdir -p "$UNIT_DIR"
+        sed -e "s|^Environment=BEAUT_CONFIG=.*|Environment=BEAUT_CONFIG=$CONF_DIR/config.env|" \
+            -e "s|^ExecStart=.*|ExecStart=$BIN/beaut daemon|" \
+            -e "s|^ReadWritePaths=.*|ReadWritePaths=$STATE|" \
+            -e "s|^Documentation=.*|Documentation=file://$SHARE/docs/architecture.md|" \
+            "$SRC/beaut.service" > "$UNIT_DIR/beaut.service"
+        if [ "$USER_MODE" = 1 ]; then
+            # per-user units cannot switch user or use system state dirs
+            sed -i -e '/^User=/d' -e '/^Group=/d' -e '/^StateDirectory/d' -e '/^ConfigurationDirectory/d' \
+                -e '/^ProtectHome=/d' \
+                -e 's|^WantedBy=.*|WantedBy=default.target|' "$UNIT_DIR/beaut.service"
+        fi
+        $SYSTEMCTL daemon-reload
+        case ",$ROLES_ARG," in
+            *,hub,*|*,worker,*)
+                $SYSTEMCTL enable beaut.service >/dev/null 2>&1 || true
+                if $SYSTEMCTL restart beaut.service 2>/dev/null; then
+                    info "beaut.service started"
+                else
+                    warn "beaut.service not running yet (daemon parts land in later steps); check: $SYSTEMCTL status beaut"
+                fi ;;
+            *) info "client-only host: unit installed but not enabled" ;;
+        esac
+    fi
+fi
+
+info "done. try: beaut --help ; beaut config"

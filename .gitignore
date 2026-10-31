@@ -1,18 +1,16 @@
-# build artifacts
-bin/
-src/*.o
-cluster.env
-.build-info
-
-# runtime junk from earlier tilde/state-dir bugs
-/~
-/*STATE_DIR/
-
 # local config (user-edited, do not commit)
 config.env
 
-# personal environment checkout, exposed through the `svr` symlink
-.svr/
+# local state / scratch
+/state/
+*.lock
+*.swp
+*.tmp
+tags
+
+# personal environment checkout, exposed through the `.svr` symlink
+# (no trailing slash: it is a symlink, not a directory)
+.svr
 
 # macOS / editors
 .DS_Store

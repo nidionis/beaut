@@ -1,0 +1,32 @@
+[Unit]
+Description=beaut — pooled spare compute (roles from /etc/beaut/config.env)
+Documentation=file:///usr/local/share/beaut/docs/architecture.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# `beaut daemon` starts the long-running parts of every enabled role:
+#   hub    → HTTP app on $ADMIN_PORT + mailbox poller
+#   worker → reverse ssh tunnel + capacity reporting
+Environment=BEAUT_CONFIG=/etc/beaut/config.env
+ExecStart=/usr/local/bin/beaut daemon
+Restart=on-failure
+RestartSec=5
+# exit 64 = "not implemented yet": do not loop on it
+RestartPreventExitStatus=64
+
+# Hardening — state lives only under STATE_DIR
+User=beaut
+Group=beaut
+StateDirectory=beaut
+StateDirectoryMode=0700
+ConfigurationDirectory=beaut
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ReadWritePaths=/var/lib/beaut
+
+[Install]
+WantedBy=multi-user.target
