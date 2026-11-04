@@ -8,8 +8,11 @@
 
 set -u
 LAB_ROOT=${1:-"$HOME/code/beaut/lab"}
+USERKNOWNHOSTSFILE=$LAB_ROOT/.ssh/known_hosts 
 BEAUT="$LAB_ROOT/beaut-lab"
-TMP=$(mktemp -d "${LAB_ROOT:-/tmp}/beaut-lab-test.XXXXXX")
+TMP=/tmp/beaut-lab-test
+rm -rf $TMP
+#TMP=$(mktemp -d "${LAB_ROOT:-/tmp}/beaut-lab-test.XXXXXX")
 #trap 'rm -rf "$TMP"' EXIT          # uncomment to clean up the temp tree
 
 pass=0 fail=0
@@ -61,6 +64,39 @@ fi
 # Two hosts are "friends" once each accepts the other's public key.
 keygen() { ssh-keygen -q -t ed25519 -N '' -C "$1" -f "$DIR/$1" >/dev/null; }
 keygen alice
+
+# ---- connection scan (alice -> friends) --------------------------------------
+# Load the fixture config for the addresses the app itself reads.
+# shellcheck disable=SC1090
+. "$LAB_CONFIG"
+
+# The orchestrator is mandatory; router and neighbours are best-effort.
+FRIENDS=${FRIENDS:-$ORCHESTRATOR_ADDR}
+[ -n "${ROUTER_ADDR:-}" ] && FRIENDS="$FRIENDS $ROUTER_ADDR"
+while read -r name addr _rest; do
+    case "$name" in ''|'#'*) continue ;; esac
+    [ -n "$addr" ] && FRIENDS="$FRIENDS $addr"
+done <<< "$FRIENDS"
+
+scan_connection() {
+    local addr=$1
+    ssh -o BatchMode=yes -o ConnectTimeout=3 -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=$USERKNOWNHOSTSFILE -o LogLevel=ERROR \
+        -i "$DIR/$NAME" "${NAME:-$TUNNEL_USER}@$addr" true
+}
+
+for ADDR in $FRIENDS; do
+    if scan_connection "$ADDR"; then
+        ok "ssh to $ADDR"
+    else
+        printf '\033[31madd your pub key to %s\033[0m\n' "$ADDR" >&2
+        if [ "$ADDR" = "$ORCHESTRATOR_ADDR" ]; then
+            no "ssh to orchestrator $ADDR (mandatory)"
+        else
+            no "ssh to $ADDR"
+        fi
+    fi
+done
 
 # ---- 1. the shipped config loads ---------------------------------------------
 # Note: in `DIR=x STATE_DIR="$DIR/..." cmd`, later assignments see earlier ones,
