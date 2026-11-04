@@ -1,0 +1,394 @@
+#!/usr/bin/env bash
+# lab/beaut-lab — standalone orchestrator/worker/client prototype.
+#
+# It implements the part of beaut this lab needs:
+#   * workers announce free resources with heartbeats
+#   * clients are recognized by their public key in $CLIENT_KEYS
+#   * the orchestrator dispatches resource requests and writes answers
+#   * stale heartbeats and expired leases terminate running commands
+#
+# See lab/README.md. Writes only under $DIR/$STATE_DIR.
+
+set -u
+LAB_ROOT=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=lib/lab.sh
+. "$LAB_ROOT/lib/lab.sh"
+load_config
+
+usage() {
+    cat <<EOF
+beaut-lab — beaut lab orchestrator/worker/client
+
+  init                          create $DIR and the state files
+  client add <keyfile> [name]   recognize a client key (authorized_keys)
+  client list                   list recognized clients
+  client check <keyfile>        exit 0 if the key is recognized
+  worker add <keyfile>          authorize a worker key for reverse ssh
+  worker list                   list authorized workers
+  keys orchestrator             authorized_keys for the orchestrator (workers)
+  keys worker                   authorized_keys for a worker (clients)
+
+  heartbeat [--name N] [--addr A] [--cpu-total C] [--cpu-free C]
+            [--mem-free MIB] [--disk-free GIB] [--port P]
+            [--priority N] [--term N]
+  request --key K [--client NAME] [--cpu C] [--mem MIB] [--disk GIB]
+  answer <id>                   print a dispatch answer
+  requests                      list requests and their answer status
+  renew <id> [--seconds N]      extend a session lease
+  run <id> -- <command...>      start a session on this worker
+  release <id>                  terminate a session now
+  reap                          expire stale workers and leases (kills)
+  status                        workers and sessions
+
+Config: \$LAB_CONFIG (default lab/config.env), then its .advanced.env sibling.
+EOF
+}
+
+valid_id() { [[ ${1:-} =~ ^[A-Za-z0-9._-]+$ ]]; }
+need_id()  { valid_id "${1:-}" || lab_die "invalid session id"; }
+
+# ---- init --------------------------------------------------------------------
+cmd_init() {
+    state_init
+    event "init"
+    printf 'dir=%s\nstate=%s\nclients=%s\nworkers=%s\n' \
+        "$DIR" "$STATE_DIR" "$CLIENT_KEYS" "$WORKER_KEYS"
+}
+
+# ---- clients / workers -------------------------------------------------------
+cmd_client() {
+    local sub=${1:-list}; shift || true
+    state_init
+    case "$sub" in
+        add)
+            local file=${1:-} key fp
+            [ -n "$file" ] && [ -r "$file" ] || lab_die "usage: client add <pubkey-file>"
+            key=$(cat "$file"); fp=$(printf '%s\n' "$key" | key_fp)
+            [ -n "$fp" ] || lab_die "not a valid public key: $file"
+            if authorized_keys_has "$key" "$CLIENT_KEYS"; then
+                printf 'exists\t%s\n' "$fp"; return 0
+            fi
+            with_lock "$CLIENT_KEYS" tsv_append "$CLIENT_KEYS" "$key"
+            event "client add $fp"
+            printf 'added\t%s\n' "$fp"
+            ;;
+        list)
+            local line fp name
+            while IFS= read -r line || [ -n "$line" ]; do
+                case "$line" in ''|'#'*) continue ;; esac
+                fp=$(printf '%s\n' "$line" | key_fp)
+                name=$(printf '%s\n' "$line" | awk '{ print $NF }')
+                case "$name" in ssh-*|ecdsa-*|sk-*) name="-" ;; esac
+                printf '%s\t%s\n' "${fp:--}" "$name"
+            done < "$CLIENT_KEYS"
+            ;;
+        check)
+            local file=${1:-}
+            [ -n "$file" ] && [ -r "$file" ] || lab_die "usage: client check <pubkey-file>"
+            if authorized_keys_has "$file" "$CLIENT_KEYS"; then
+                printf 'ok\n'
+            else
+                printf 'no\n'; return 2
+            fi
+            ;;
+        *) lab_die "unknown client subcommand: $sub" ;;
+    esac
+}
+
+cmd_worker() {
+    local sub=${1:-list}; shift || true
+    state_init
+    case "$sub" in
+        add)
+            local file=${1:-} key fp
+            [ -n "$file" ] && [ -r "$file" ] || lab_die "usage: worker add <pubkey-file>"
+            key=$(cat "$file"); fp=$(printf '%s\n' "$key" | key_fp)
+            [ -n "$fp" ] || lab_die "not a valid public key: $file"
+            if authorized_keys_has "$key" "$WORKER_KEYS"; then
+                printf 'exists\t%s\n' "$fp"
+            else
+                with_lock "$WORKER_KEYS" tsv_append "$WORKER_KEYS" "$key"
+                event "worker add $fp"
+                printf 'added\t%s\n' "$fp"
+            fi
+            printf 'authorized_keys: no-pty,no-agent-forwarding,no-X11-forwarding,permitlisten="*" %s\n' "$key"
+            ;;
+        list)
+            local line fp name
+            while IFS= read -r line || [ -n "$line" ]; do
+                case "$line" in ''|'#'*) continue ;; esac
+                fp=$(printf '%s\n' "$line" | key_fp)
+                name=$(printf '%s\n' "$line" | awk '{ print $NF }')
+                case "$name" in ssh-*|ecdsa-*|sk-*) name="-" ;; esac
+                printf '%s\t%s\n' "${fp:--}" "$name"
+            done < "$WORKER_KEYS"
+            ;;
+        check)
+            local file=${1:-}
+            [ -n "$file" ] && [ -r "$file" ] || lab_die "usage: worker check <pubkey-file>"
+            if authorized_keys_has "$file" "$WORKER_KEYS"; then
+                printf 'ok\n'
+            else
+                printf 'no\n'; return 2
+            fi
+            ;;
+        *) lab_die "unknown worker subcommand: $sub" ;;
+    esac
+}
+
+# Workers connect *to* the orchestrator; their keys are authorized with
+# reverse-forwarding only (no shell, no pty).
+cmd_keys() {
+    local role=${1:-} line
+    state_init
+    case "$role" in
+        orchestrator)
+            while IFS= read -r line || [ -n "$line" ]; do
+                case "$line" in ''|'#'*) continue ;; esac
+                printf 'no-pty,no-agent-forwarding,no-X11-forwarding,permitlisten="*" %s\n' "$line"
+            done < "$WORKER_KEYS"
+            ;;
+        worker)
+            # The client hops through the orchestrator into the worker's
+            # reverse tunnel: only loopback forwarding, no agent/X11.
+            while IFS= read -r line || [ -n "$line" ]; do
+                case "$line" in ''|'#'*) continue ;; esac
+                printf 'no-agent-forwarding,no-X11-forwarding,permitopen="127.0.0.1:*" %s\n' "$line"
+            done < "$CLIENT_KEYS"
+            ;;
+        *) lab_die "usage: keys orchestrator|worker" ;;
+    esac
+}
+
+# ---- heartbeat ---------------------------------------------------------------
+cmd_heartbeat() {
+    local name=$NAME addr=127.0.0.1 ct="" cf="" mm="" dd="" po=0 pr=10 te=1
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --name) name=$2; shift 2 ;;
+            --addr) addr=$2; shift 2 ;;
+            --cpu-total) ct=$2; shift 2 ;;
+            --cpu-free) cf=$2; shift 2 ;;
+            --mem-free) mm=$2; shift 2 ;;
+            --disk-free) dd=$2; shift 2 ;;
+            --port) po=$2; shift 2 ;;
+            --priority) pr=$2; shift 2 ;;
+            --term) te=$2; shift 2 ;;
+            *) lab_die "heartbeat: unknown option $1" ;;
+        esac
+    done
+    [ -n "$cf" ] || cf=$ct
+    [ -n "$ct" ] || ct=$cf
+    [ -n "$cf" ] || lab_die "heartbeat needs --cpu-free or --cpu-total"
+    [ -n "$mm" ] || lab_die "heartbeat needs --mem-free"
+    [ -n "$dd" ] || lab_die "heartbeat needs --disk-free"
+    is_num "$cf" || lab_die "--cpu-free must be numeric"
+    is_num "$ct" || lab_die "--cpu-total must be numeric"
+    is_uint "$mm" || lab_die "--mem-free must be an integer (MiB)"
+    is_uint "$dd" || lab_die "--disk-free must be an integer (GiB)"
+    is_uint "$pr" || lab_die "--priority must be an integer"
+    is_uint "$te" || lab_die "--term must be an integer"
+    is_port "$po" 2>/dev/null || { [ "$po" = 0 ] || lab_die "--port must be 0 or 1..65535"; }
+
+    state_init
+    local stored
+    stored=$(worker_term "$name")
+    if [ -n "$stored" ] && [ "$te" -lt "$stored" ]; then
+        lab_die "stale heartbeat for $name: term $te < $stored (fenced)"
+    fi
+    if [ -n "$stored" ] && [ "$te" -gt "$stored" ]; then
+        event "worker $name promoted term $stored -> $te"
+    fi
+    with_lock "$(workers_file)" worker_upsert \
+        "$name" "$addr" "$ct" "$cf" "$mm" "$dd" "$po" "$pr" "$(now)" "$te" "up"
+    event "heartbeat $name term=$te cpu=$cf/$ct mem=${mm}MiB disk=${dd}GiB"
+    printf 'ok\t%s\t%s\n' "$name" "$(now)"
+}
+
+# ---- requests / dispatch -----------------------------------------------------
+cmd_request() {
+    local key=${LAB_CLIENT_KEY:-} client="" cpu=1 mem=512 disk=1
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --key) key=$2; shift 2 ;;
+            --client) client=$2; shift 2 ;;
+            --cpu) cpu=$2; shift 2 ;;
+            --mem) mem=$2; shift 2 ;;
+            --disk) disk=$2; shift 2 ;;
+            *) lab_die "request: unknown option $1" ;;
+        esac
+    done
+    is_num "$cpu" || lab_die "--cpu must be numeric"
+    is_uint "$mem" || lab_die "--mem must be an integer (MiB)"
+    is_uint "$disk" || lab_die "--disk must be an integer (GiB)"
+
+    auth_client "$key"
+    [ -n "$client" ] && CLIENT_NAME=$client
+    state_init
+
+    local id ts ans pick w a po te ac am ad lease
+    id=$(printf 's-%s-%04x' "$(now)" "$RANDOM")
+    ts=$(now)
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$CLIENT_NAME" "$cpu" "$mem" "$disk" "$ts" \
+        > "$STATE_DIR/requests/$id.req"
+
+    pick=$(pick_worker "$cpu" "$mem" "$disk")
+    if [ -n "$pick" ]; then
+        IFS=$'\t' read -r w a po te ac am ad <<< "$pick"
+        lease=$((ts + SESSION_LEASE_SECONDS))
+        session_add "$id" "$CLIENT_NAME" "$w" "-" "$cpu" "$mem" "$disk" 0 0 "$lease" "$te" "pending"
+        ans=$(printf 'ok\t%s\t%s\t%s\t%s\t%s\t-' "$w" "$a" "$po" "$te" "$lease")
+    else
+        ans=$(printf 'denied\t-\t-\t-\t0\t0\tno-capacity')
+    fi
+    printf '%s\n' "$ans" > "$STATE_DIR/requests/$id.ans"
+    event "request $id client=$CLIENT_NAME cpu=$cpu mem=$mem disk=$disk -> ${ans%%$'\t'*}"
+    printf '%s\t%s\n' "$id" "$ans"
+}
+
+cmd_answer() {
+    local id=${1:-}; need_id "$id"
+    [ -r "$STATE_DIR/requests/$id.ans" ] || lab_die "no answer for $id"
+    cat "$STATE_DIR/requests/$id.ans"
+}
+
+cmd_requests() {
+    state_init
+    local f id st
+    for f in "$STATE_DIR"/requests/*.req; do
+        [ -e "$f" ] || continue
+        id=$(basename "$f" .req)
+        if [ -r "$STATE_DIR/requests/$id.ans" ]; then
+            st=$(cut -f1 "$STATE_DIR/requests/$id.ans")
+        else
+            st="pending"
+        fi
+        printf '%s\t%s\n' "$id" "$st"
+    done
+}
+
+cmd_renew() {
+    local id=${1:-} secs=$SESSION_LEASE_SECONDS
+    need_id "$id"
+    shift || true
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --seconds) secs=$2; shift 2 ;;
+            *) lab_die "renew: unknown option $1" ;;
+        esac
+    done
+    is_uint "$secs" && [ "$secs" -ge 1 ] || lab_die "--seconds must be a positive integer"
+    local st
+    st=$(session_get "$id" 12)
+    case "$st" in
+        pending|running) ;;
+        *) lab_die "session $id is ${st:-unknown}" ;;
+    esac
+    local lease=$(( $(now) + secs ))
+    session_set "$id" 10 "$lease"
+    event "renew $id lease=$lease"
+    printf '%s\t%s\n' "$id" "$lease"
+}
+
+# ---- execution ---------------------------------------------------------------
+cmd_run() {
+    local id=${1:-}; need_id "$id"; shift || true
+    [ "${1:-}" = "--" ] && shift
+    [ $# -gt 0 ] || lab_die "usage: run <id> -- <command...>"
+    state_init
+    local worker st pid cmd
+    worker=$(session_get "$id" 3)
+    st=$(session_get "$id" 12)
+    [ -n "$worker" ] || lab_die "no such session: $id"
+    [ "$worker" = "$NAME" ] || lab_die "session $id is assigned to worker '$worker', not '$NAME'"
+    [ "$st" = "pending" ] || lab_die "session $id is '$st', not pending"
+    cmd=$*
+
+    local -a wrap=()
+    if [ "${LAB_USE_SYSTEMD_RUN:-0}" = "1" ] && have systemd-run; then
+        wrap=(systemd-run --scope -p "CPUQuota=$EXEC_CPU_QUOTA" \
+              -p "MemoryMax=$EXEC_MEMORY_MAX" -p "IOWeight=$EXEC_IO_WEIGHT" --)
+    else
+        have nice && wrap+=(nice -n "$EXEC_NICE")
+        have ionice && wrap+=(ionice -c "$EXEC_IONICE_CLASS")
+    fi
+    # setsid may fork to become a session leader, so $! is not reliable:
+    # have the child publish its own pid, then exec the command in place.
+    local pidfile="$STATE_DIR/requests/$id.pid" launcher=""
+    local out="$STATE_DIR/logs/$id.out" err="$STATE_DIR/logs/$id.err"
+    rm -f "$pidfile"
+    local shell="echo \$\$ > '$pidfile'; ulimit -v $EXEC_ULIMIT_V_KB 2>/dev/null || true; exec $cmd"
+    # Detach stdio: a caller using $(...) would otherwise keep the pipe open
+    # and reap the child when the substitution exits.
+    if have setsid; then
+        setsid "${wrap[@]}" bash -c "$shell" </dev/null >"$out" 2>"$err" &
+    else
+        "${wrap[@]}" bash -c "$shell" </dev/null >"$out" 2>"$err" &
+    fi
+    launcher=$!
+    local i
+    for i in $(seq 1 100); do
+        [ -s "$pidfile" ] && break
+        sleep 0.01
+    done
+    pid=$(cat "$pidfile" 2>/dev/null || true)
+    [ -n "$pid" ] || pid=$launcher
+
+    session_set "$id" 4 "$cmd"
+    session_set "$id" 8 "$pid"
+    session_set "$id" 9 "$(now)"
+    session_set "$id" 10 "$(( $(now) + SESSION_LEASE_SECONDS ))"
+    session_set "$id" 12 "running"
+    event "run $id pid=$pid cmd=$cmd"
+    printf 'started\t%s\t%s\n' "$id" "$pid"
+}
+
+cmd_release() {
+    local id=${1:-}; need_id "$id"
+    local st
+    st=$(session_get "$id" 12)
+    [ -n "$st" ] || lab_die "no such session: $id"
+    terminate_session "$id" "released"
+    printf 'terminated\t%s\n' "$id"
+}
+
+# ---- status ------------------------------------------------------------------
+cmd_status() {
+    state_init
+    printf 'WORKERS  name\taddr\tcpu_free/total\tmem_free\tdisk_free\tport\tpriority\tterm\tstatus\tage\n'
+    local n a ct cf mm dd po pr se te st age
+    while IFS=$'\t' read -r n a ct cf mm dd po pr se te st; do
+        [ -n "$n" ] || continue
+        age=$(( $(now) - ${se:-0} ))
+        printf '         %s\t%s\t%s/%s\t%s\t%s\t%s\t%s\t%s\t%s\t%ss\n' \
+            "$n" "$a" "$cf" "$ct" "$mm" "$dd" "$po" "$pr" "$te" "$st" "$age"
+    done < "$(workers_file)"
+
+    printf 'SESSIONS id\tclient\tworker\tcpu\tmem\tdisk\tpid\tlease\tterm\tstatus\n'
+    local id client w cmd cpu mem disk pid started lease term status
+    while IFS=$'\t' read -r id client w cmd cpu mem disk pid started lease term status; do
+        [ -n "$id" ] || continue
+        printf '         %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$id" "$client" "$w" "$cpu" "$mem" "$disk" "$pid" "$lease" "$term" "$status"
+    done < "$STATE_DIR/sessions.tsv"
+}
+
+# ---- main --------------------------------------------------------------------
+cmd=${1:-help}; shift || true
+case "$cmd" in
+    init)      cmd_init ;;
+    client)    cmd_client "$@" ;;
+    worker)    cmd_worker "$@" ;;
+    keys)      cmd_keys "$@" ;;
+    heartbeat) cmd_heartbeat "$@" ;;
+    request)   cmd_request "$@" ;;
+    answer)    cmd_answer "$@" ;;
+    requests)  cmd_requests ;;
+    renew)     cmd_renew "$@" ;;
+    run)       cmd_run "$@" ;;
+    release)   cmd_release "$@" ;;
+    reap)      cmd_reap ;;
+    status)    cmd_status ;;
+    help|-h|--help) usage ;;
+    *) usage >&2; lab_die "unknown command: $cmd" ;;
+esac

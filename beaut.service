@@ -13,7 +13,7 @@ Environment=BEAUT_CONFIG=/etc/beaut/config.env
 ExecStart=/usr/local/bin/beaut daemon
 Restart=on-failure
 RestartSec=5
-# exit 64 = "not implemented yet": do not loop on it
+# exit 64 = not runnable yet (not enrolled / not implemented): do not loop on it
 RestartPreventExitStatus=64
 
 # Hardening — state lives only under STATE_DIR

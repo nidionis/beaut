@@ -4,11 +4,22 @@
 set -euo pipefail
 
 BEAUT_ROOT="${BEAUT_ROOT:-$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)}"
-export BEAUT_ROOT
+BEAUT_SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+export BEAUT_ROOT BEAUT_SELF
 # shellcheck source=../lib/common.sh
 . "$BEAUT_ROOT/lib/common.sh"
 # shellcheck source=../lib/auth.sh
 . "$BEAUT_ROOT/lib/auth.sh"
+# shellcheck source=../lib/stats.sh
+. "$BEAUT_ROOT/lib/stats.sh"
+# shellcheck source=../lib/hub.sh
+. "$BEAUT_ROOT/lib/hub.sh"
+# shellcheck source=../lib/worker.sh
+. "$BEAUT_ROOT/lib/worker.sh"
+# shellcheck source=../lib/client.sh
+. "$BEAUT_ROOT/lib/client.sh"
+# shellcheck source=../lib/http.sh
+. "$BEAUT_ROOT/lib/http.sh"
 
 usage() {
     cat <<EOF
@@ -27,24 +38,29 @@ common
   user approve <email>       promote to registered tier
   user level <email> <lvl>   set guest|registered|admin
   user rm <email>            remove a user
-  token issue <email>        issue a one-time client token
+  token issue <email>        issue a one-time enrollment token
   token check <token>        print owner if token is valid
   token burn <token>         consume a token
+  token client <email>       issue/replace a reusable client token
+  token revoke <email>       revoke a client token
   tier [name]                show tier table / one tier (cpu mem_mib disk_gib)
 
 daemon                     foreground supervisor used by beaut.service:
-                             hub → serve + mail-poll, worker → enroll/tunnel
+                             hub → serve + mail-poll, worker → tunnel + heartbeat
 
 hub   (role: hub, serves \$DOMAIN)
-  serve                      HTTP stats + enrollment app on :\$ADMIN_PORT  [step 2]
+  serve                      HTTP stats + enrollment app on :\$ADMIN_PORT
+                             / /stats /stats.json /health /give<N> /hubkey
+                             POST /register /heartbeat /run  GET /client/<token>
   mail-poll                  poll mailbox, handle join@<domain>           [step 6]
 
 worker (role: worker, donates resources)
-  enroll [N]                 donate N% (default GIVE_PCT) and join the hub  [step 3]
-  worker-exec <cmd...>       run a command under the donated quota         [step 3]
+  enroll [N]                 donate N% (default GIVE_PCT) and join the hub
+  worker-exec <cpu> <mem> <disk> -- <cmd...>
+                             run a command under the donated quota
 
 client (role: client, submits work)
-  run <cmd...>               run a command on a fitting worker             [step 4]
+  run <cmd...>               run a command on a fitting worker
   vm                         open a graphical VM session (SPICE over SSH)  [step 5]
 
 Commands tagged [step N] are planned and currently exit 64 "not implemented".
@@ -65,11 +81,14 @@ cmd_config() {
     local k
     echo "config_file=${BEAUT_CONFIG_FILE:-<none, defaults>}"
     for k in DOMAIN ROLES NAME ADMIN_PORT ADMIN_BIND ADMINS TUNNEL_USER TUNNEL_PORT \
-             TUNNEL_PORT_RANGE MAIL_POLL_SECONDS MAIL_FETCH_CMD MAILDIR MAIL_FROM \
-             MSMTP_ACCOUNT MAIL_ACCOUNT_PATTERN GIVE_PCT WORKER_USER STATE_DIR \
-             LOG_LEVEL TOKEN_TTL_SECONDS; do
+             TUNNEL_PORT_RANGE WORKER_STALE_SECONDS WORKER_HEARTBEAT_SECONDS \
+             WORKER_SSH_PORT WORKER_KEY_DIR HUB_KEY RUN_TIMEOUT MAIL_POLL_SECONDS \
+             MAIL_FETCH_CMD MAILDIR MAIL_FROM MSMTP_ACCOUNT MAIL_ACCOUNT_PATTERN \
+             GIVE_PCT WORKER_USER STATE_DIR LOG_LEVEL TOKEN_TTL_SECONDS \
+             CLIENT_TOKEN CLIENT_EMAIL CLIENT_TOKEN_TTL_SECONDS; do
         case "$k" in
-            *PASS*|*SECRET*|*TOKEN_VALUE*) printf '%s=%s\n' "$k" "$(mask "${!k}")" ;;
+            CLIENT_TOKEN|*PASS*|*SECRET*|*TOKEN_VALUE*)
+                printf '%s=%s\n' "$k" "$(mask "${!k}")" ;;
             *) printf '%s=%q\n' "$k" "${!k}" ;;
         esac
     done
@@ -114,7 +133,11 @@ cmd_token() {
                token_check "$1" || { BEAUT_EXIT=2 die "token invalid, used or expired"; } ;;
         burn)  [ $# -eq 1 ] || die "usage: beaut token burn <token>"
                token_burn "$1" || { BEAUT_EXIT=2 die "token invalid, used or expired"; } ;;
-        *)     die "usage: beaut token issue|check|burn ..." ;;
+        client) [ $# -eq 1 ] || die "usage: beaut token client <email>"
+               client_token_issue "$1" ;;
+        revoke) [ $# -eq 1 ] || die "usage: beaut token revoke <email>"
+               client_token_revoke "$1" && info "revoked client token for $1" ;;
+        *)     die "usage: beaut token issue|check|burn|client|revoke ..." ;;
     esac
 }
 
@@ -122,16 +145,33 @@ cmd_token() {
 # enabled roles; parts not implemented yet are reported and skipped.
 cmd_daemon() {
     init_state
-    local started=0 r
+    local started=0 r pids=() rc=0
     for r in $(roles); do
         case "$r" in
-            hub)    warn "hub: serve/mail-poll not implemented yet (steps 2, 6)" ;;
-            worker) warn "worker: enroll/tunnel not implemented yet (step 3)" ;;
+            hub)
+                need socat
+                http_serve &
+                pids+=("$!")
+                started=$((started + 1))
+                warn "hub: mail-poll not implemented yet (step 6)"
+                ;;
+            worker)
+                if worker_enrolled; then
+                    worker_daemon &
+                    pids+=("$!")
+                    started=$((started + 1))
+                else
+                    warn "worker role is not enrolled; run 'beaut enroll <pct>'"
+                fi
+                ;;
             client) debug "client role has no daemon part" ;;
         esac
     done
     [ "$started" -gt 0 ] || { BEAUT_EXIT=64 die "no runnable role service yet (ROLES=$ROLES)"; }
-    wait
+    # Propagate the first service that dies so systemd can restart/fence it.
+    trap 'for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done' EXIT INT TERM
+    wait -n || rc=$?
+    exit "$rc"
 }
 
 cmd_tier() {
@@ -157,7 +197,10 @@ main() {
         esac
     done
     export BEAUT_CONFIG BEAUT_LOG_LEVEL 2>/dev/null || true
-    [ -n "$roles_override" ] && BEAUT_ROLES="$roles_override"
+    if [ -n "$roles_override" ]; then
+        BEAUT_ROLES="$roles_override"
+        export BEAUT_ROLES
+    fi
     load_config
 
     local cmd="${1:-help}"; shift || true
@@ -170,14 +213,20 @@ main() {
         token)       cmd_token "$@" ;;
         tier)        cmd_tier "$@" ;;
         daemon)      cmd_daemon ;;
+        # internal: one HTTP request/response, run by socat from `serve`
+        __http)      http_handle ;;
+        # internal: sshd AuthorizedKeysCommand for the tunnel account
+        __authorized-keys) worker_authorized_keys "$@" ;;
         # hub
-        serve)       require_role hub;    BEAUT_EXIT=64 not_impl serve "step 2 (lib/http.sh)" ;;
+        serve)       require_role hub;    http_serve ;;
         mail-poll)   require_role hub;    BEAUT_EXIT=64 not_impl mail-poll "step 6 (lib/mail.sh)" ;;
         # worker
-        enroll)      require_role worker; BEAUT_EXIT=64 not_impl enroll "step 3 (lib/worker.sh)" ;;
-        worker-exec) require_role worker; BEAUT_EXIT=64 not_impl worker-exec "step 3 (lib/worker.sh)" ;;
+        enroll)      require_role worker; worker_enroll "$@" ;;
+        worker-exec) require_role worker; worker_exec "$@" ;;
         # client
-        run)         require_role client; BEAUT_EXIT=64 not_impl run "step 4 (lib/hub.sh)" ;;
+        run)         { has_role client || has_role hub; } \
+                         || die "run needs the client or hub role (ROLES=$ROLES)"
+                     client_run "$@" ;;
         vm)          require_role client; BEAUT_EXIT=64 not_impl vm "step 5 (lib/vm.sh)" ;;
         *)           die "unknown command: $cmd (see beaut --help)" ;;
     esac

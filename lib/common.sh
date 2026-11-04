@@ -6,8 +6,7 @@
 BEAUT_COMMON_LOADED=1
 
 BEAUT_ROOT="${BEAUT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-BEAUT_LIB="$BEAUT_ROOT/lib"
-BEAUT_VERSION="0.1.0"
+export BEAUT_VERSION="0.1.0"
 
 # ---- logging -----------------------------------------------------------------
 # Levels: debug=0 info=1 warn=2 error=3. Everything goes to stderr so that
@@ -57,9 +56,11 @@ config_file() {
 
 # Keys that may come from config.env / BEAUT_<KEY> environment overrides.
 config_keys=(DOMAIN ROLES NAME ADMIN_PORT ADMIN_BIND ADMINS TUNNEL_USER TUNNEL_PORT
-             TUNNEL_PORT_RANGE MAIL_POLL_SECONDS MAIL_FETCH_CMD MAILDIR MAIL_FROM
-             MSMTP_ACCOUNT MAIL_ACCOUNT_PATTERN GIVE_PCT WORKER_USER STATE_DIR
-             LOG_LEVEL TOKEN_TTL_SECONDS TIERS)
+             TUNNEL_PORT_RANGE WORKER_STALE_SECONDS WORKER_HEARTBEAT_SECONDS
+             WORKER_SSH_PORT WORKER_KEY_DIR HUB_KEY RUN_TIMEOUT
+             MAIL_POLL_SECONDS MAIL_FETCH_CMD MAILDIR MAIL_FROM MSMTP_ACCOUNT
+             MAIL_ACCOUNT_PATTERN GIVE_PCT WORKER_USER STATE_DIR LOG_LEVEL
+             TOKEN_TTL_SECONDS CLIENT_TOKEN CLIENT_EMAIL CLIENT_TOKEN_TTL_SECONDS TIERS)
 
 config_defaults() {
     DOMAIN="${DOMAIN:-localhost}"
@@ -71,6 +72,10 @@ config_defaults() {
     TUNNEL_USER="${TUNNEL_USER:-tunnel}"
     TUNNEL_PORT="${TUNNEL_PORT:-22}"
     TUNNEL_PORT_RANGE="${TUNNEL_PORT_RANGE:-20000-20999}"
+    WORKER_STALE_SECONDS="${WORKER_STALE_SECONDS:-90}"
+    WORKER_HEARTBEAT_SECONDS="${WORKER_HEARTBEAT_SECONDS:-30}"
+    WORKER_SSH_PORT="${WORKER_SSH_PORT:-22}"
+    RUN_TIMEOUT="${RUN_TIMEOUT:-0}"
     MAIL_POLL_SECONDS="${MAIL_POLL_SECONDS:-60}"
     MAIL_FETCH_CMD="${MAIL_FETCH_CMD:-mpop -q}"
     MAILDIR="${MAILDIR:-$HOME/.beaut/Maildir}"
@@ -80,8 +85,13 @@ config_defaults() {
     GIVE_PCT="${GIVE_PCT:-50}"
     WORKER_USER="${WORKER_USER:-beaut}"
     STATE_DIR="${STATE_DIR:-/var/lib/beaut}"
+    WORKER_KEY_DIR="${WORKER_KEY_DIR:-$STATE_DIR/worker}"
+    HUB_KEY="${HUB_KEY:-$STATE_DIR/id_hub}"
     LOG_LEVEL="${LOG_LEVEL:-info}"
     TOKEN_TTL_SECONDS="${TOKEN_TTL_SECONDS:-604800}"
+    CLIENT_TOKEN="${CLIENT_TOKEN:-}"
+    CLIENT_EMAIL="${CLIENT_EMAIL:-}"
+    CLIENT_TOKEN_TTL_SECONDS="${CLIENT_TOKEN_TTL_SECONDS:-2592000}"
     TIERS="${TIERS:-$'guest 1 2048 16\nregistered 4 4096 32\nadmin -1 -1 -1'}"
 }
 
@@ -131,6 +141,17 @@ validate_config() {
     is_uint "$GIVE_PCT" && [ "$GIVE_PCT" -ge 1 ] && [ "$GIVE_PCT" -le 100 ] \
         || die "GIVE_PCT must be 1..100 (got '$GIVE_PCT')"
     is_uint "$TOKEN_TTL_SECONDS" || die "TOKEN_TTL_SECONDS must be a non-negative integer"
+    is_uint "$WORKER_STALE_SECONDS" && [ "$WORKER_STALE_SECONDS" -ge 1 ] \
+        || die "WORKER_STALE_SECONDS must be a positive integer"
+    is_uint "$WORKER_HEARTBEAT_SECONDS" && [ "$WORKER_HEARTBEAT_SECONDS" -ge 1 ] \
+        || die "WORKER_HEARTBEAT_SECONDS must be a positive integer"
+    [ "$WORKER_HEARTBEAT_SECONDS" -lt "$WORKER_STALE_SECONDS" ] \
+        || die "WORKER_HEARTBEAT_SECONDS must be less than WORKER_STALE_SECONDS"
+    is_port "$WORKER_SSH_PORT" || die "WORKER_SSH_PORT must be 1..65535"
+    is_uint "$RUN_TIMEOUT" || die "RUN_TIMEOUT must be a non-negative integer"
+    is_uint "$CLIENT_TOKEN_TTL_SECONDS" || die "CLIENT_TOKEN_TTL_SECONDS must be a non-negative integer"
+    [ -z "$CLIENT_TOKEN" ] || [[ "$CLIENT_TOKEN" =~ ^[a-f0-9]{32}$ ]] \
+        || die "CLIENT_TOKEN must be 32 hex characters"
     is_uint "$MAIL_POLL_SECONDS" && [ "$MAIL_POLL_SECONDS" -ge 1 ] || die "MAIL_POLL_SECONDS must be a positive integer"
     [[ "$DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || die "DOMAIN contains invalid characters"
     [[ "$NAME" =~ ^[A-Za-z0-9._-]+$ ]] || die "NAME contains invalid characters"
@@ -138,6 +159,8 @@ validate_config() {
     [[ "$TUNNEL_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "TUNNEL_USER is not a valid user name"
     [[ "$WORKER_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "WORKER_USER is not a valid user name"
     [[ "$STATE_DIR" = /* ]] || die "STATE_DIR must be an absolute path (got '$STATE_DIR')"
+    [[ "$WORKER_KEY_DIR" = /* ]] || die "WORKER_KEY_DIR must be an absolute path (got '$WORKER_KEY_DIR')"
+    [[ "$HUB_KEY" = /* ]] || die "HUB_KEY must be an absolute path (got '$HUB_KEY')"
     case "$LOG_LEVEL" in debug|info|warn|error) ;; *) die "LOG_LEVEL must be debug|info|warn|error" ;; esac
     local r
     for r in $(roles); do
@@ -175,7 +198,7 @@ has_role() { case " $(roles) " in *" $1 "*) return 0 ;; esac; return 1; }
 # default is unwritable do we fall back to a per-user dir; an explicitly
 # configured STATE_DIR that cannot be used is an error, so an admin never
 # silently works on a private, empty copy of the hub's state.
-state_files=(workers.tsv users.tsv tokens.tsv sessions.tsv)
+state_files=(workers.tsv users.tsv tokens.tsv clients.tsv sessions.tsv tunnel_keys.tsv)
 
 init_state() {
     if ! mkdir -p "$STATE_DIR" 2>/dev/null || [ ! -w "$STATE_DIR" ]; then

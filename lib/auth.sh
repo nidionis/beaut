@@ -85,8 +85,12 @@ users_list()   { cat "$(state_path users.tsv)"; }
 
 # user_tier <email> → tier name used by the scheduler (unknown → guest)
 user_tier() {
-    local l; l=$(user_level "$1")
-    case "$l" in registered|admin) printf '%s\n' "$l" ;; *) printf 'guest\n' ;; esac
+    local l=""
+    l=$(user_level "$1") || l=""
+    case "$l" in
+        admin|registered) printf '%s\n' "$l" ;;
+        *) if is_admin "$1"; then printf 'admin\n'; else printf 'guest\n'; fi ;;
+    esac
 }
 
 # ---- tokens -------------------------------------------------------------------
@@ -137,4 +141,35 @@ tokens_prune() {
     f=$(state_path tokens.tsv); cutoff=$(( $(now) - TOKEN_TTL_SECONDS ))
     tmp=$(mktemp "$f.XXXXXX") || return 1
     awk -F'\t' -v c="$cutoff" '$3 > c && $4 == 0' "$f" > "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$f"
+}
+
+# ---- reusable client tokens ---------------------------------------------------
+# clients.tsv : email  token  created_ts
+# Issued when a one-time enrollment token is redeemed; used by `beaut run`.
+_client_token_issue() {
+    local email="${1,,}" t f
+    valid_email "$email" || die "invalid email: $1"
+    f=$(state_path clients.tsv)
+    t=$(token_new)
+    tsv_delete "$f" 1 "$email"
+    tsv_append "$f" "$email" "$t" "$(now)"
+    printf '%s\n' "$t"
+}
+client_token_issue() { with_lock "$(state_path clients.tsv)" _client_token_issue "$@"; }
+
+# client_token_check <token> → owner email if valid and unexpired.
+client_token_check() {
+    local t=$1 row email created
+    valid_token "$t" || return 1
+    row=$(tsv_lookup "$(state_path clients.tsv)" 2 "$t" | head -n1)
+    [ -n "$row" ] || return 1
+    IFS=$'\t' read -r email _ created <<< "$row"
+    if [ "${CLIENT_TOKEN_TTL_SECONDS:-0}" -gt 0 ] \
+       && [ $(( $(now) - created )) -gt "$CLIENT_TOKEN_TTL_SECONDS" ]; then
+        return 1
+    fi
+    printf '%s\n' "$email"
+}
+client_token_revoke() {
+    with_lock "$(state_path clients.tsv)" tsv_delete "$(state_path clients.tsv)" 1 "${1,,}"
 }
