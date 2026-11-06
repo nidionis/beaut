@@ -1,0 +1,46 @@
+TODO — beaut (après les tests réels)
+====================================
+
+1. Redondance / quorum
+   - Envoyer chaque work unit à N nœuds et comparer les résultats
+   - Marquer une tâche comme "done" seulement si quorum atteint
+
+2. Resource share / weighted round-robin (côté agent)
+   - Arbitrer entre plusieurs projets selon leurs parts de ressources
+   - Respecter les quotas CPU/mémoire déclarés par le volontaire
+
+3. Deadlines et priorisation
+   - Assigner une deadline à chaque tâche
+   - Prioriser les jobs proches de l'échéance côté hub
+
+4. Auth / autorisations
+   - Fichiers authorized_keys clients et workers distincts
+   - Vérification par empreinte (fingerprint) des clés publiques
+
+5. Isolement d'exécution
+   - Remplacer nice/ionice/ulimit par cgroups v2 ou containers (podman/docker)
+   - Namespaces, seccomp pour les workers non fiables
+
+6. Cycle de vie résilient
+   - Watchdogs et leases renouvelables automatiquement
+   - Preemption de tâches longues
+   - Arrêt graceful (hooks, checkpoints) au lieu de TERM/KILL brut
+   - Gestion des orphan sessions (client déconnecté pendant l'exécution)
+
+7. Déploiement
+   - Remplacer install.sh par paquets (deb/rpm/apk), images OCI, Helm charts
+   - Ansible / Terraform / cloud-init pour l'enrôlement des workers
+
+8. Observabilité
+   - Métriques, tracing, logs structurés (au-delà de events.log et .out/.err)
+   - Interface HTTP/TLS (cf. lib/http.sh dans refonte.script)
+
+9. Tests réels
+   - Plusieurs machines hétérogènes (Linux/Windows/macOS/Android si possible)
+   - Nœuds sporadiquement disponibles (extinction en cours de tâche)
+   - Derrière NAT/firewall (vérifier que le pull SSH traverse)
+   - Nœud renvoyant un faux résultat (tester la détection/quorum)
+
+10. Documentation
+    - README d'installation d'un projet propre (serveur + travail + volontaires)
+    - Documenter les knobs d'environnement qui priment sur .env
