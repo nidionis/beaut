@@ -6,6 +6,7 @@ config.env
 *.lock
 *.swp
 *.tmp
+.ssh/
 tags
 
 # personal environment checkout, exposed through the `.svr` symlink
