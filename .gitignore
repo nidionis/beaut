@@ -1,5 +1,6 @@
 # local config (user-edited, do not commit)
 config.env
+.env
 
 # local state / scratch
 /state/
