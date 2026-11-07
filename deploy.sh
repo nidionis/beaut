@@ -1,170 +1,91 @@
 #!/usr/bin/env bash
-# deploy.sh — installation du serveur de contrôle beaut.
+# deploy.sh — installation de beaut sur l'ordinateur $DOMAIN.
 #
-# Avec root : installe WireGuard, service systemd, ouvre les ports.
-# Sans root : demande confirmation des ports/dossiers, installe en local
-# (scripts + config uniquement, pas de privilèges système).
+# Sans argument : installation distante via SSH/SFTP sur $DOMAIN.
+#   --no-root : installation locale (pas de privilèges système).
 #
-# Usage : ./deploy.sh [--no-root]
-
+# Cree l'utilisateur sudoer $NAME=beaut, autorise la cle d'installation
+# (+ clefs optionnelles depuis config.env), configure WireGuard,
+# depose les scripts, lance le serveur HTTP et initialise git.
 set -uo pipefail
 
 DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$DEPLOY_DIR/scripts"
+FILES_DIR="$DEPLOY_DIR/deploy/files"
 
 NO_ROOT=0
 [[ "${1:-}" == "--no-root" ]] && NO_ROOT=1
 
-# Charge la config (commentée, éditable à la main)
 . "$DEPLOY_DIR/config.env" 2>/dev/null || . "$DEPLOY_DIR/config.env.example"
 [[ -f "$DEPLOY_DIR/.env" ]] && . "$DEPLOY_DIR/.env"
 export NAME DIR STATE_DIR DOMAIN HTTP_PORT WG_PORT WG_NET WG_SERVER_IP \
-  LEASE_TTL_SECONDS HEARTBEAT_INTERVAL WORKER_STALE_SECONDS LOG_LEVEL \
-  NICE_ROOT NICE_VIP NICE_GUEST
+  TOKEN_TTL_SECONDS LOG_LEVEL HTTP_FILE_ROOT ERR404 HIST_MEM_MAX_RATIO
 
-# Source les libs
 . "$SCRIPTS_DIR/lib/core.sh"
-SCRIPTS_DIR="$DEPLOY_DIR/scripts"
 
 confirm() {
-  # Demande confirmation à l'utilisateur (y/N par défaut)
-  local prompt="$1"
-  local reponse
+  local prompt="$1" reponse
   read -r -p "$prompt [o/N]: " reponse < /dev/tty 2>/dev/null || read -r -p "$prompt [o/N]: " reponse
   [[ "$reponse" == "o" || "$reponse" == "O" || "$reponse" == "y" || "$reponse" == "Y" ]]
 }
 
+# --- Installation sur une machine distante via SSH/SFTP --------------------
+remote_install() {
+  [[ -n "$DOMAIN" ]] || { log error "DOMAIN non defini dans config.env"; exit 2; }
+  cmd_exists ssh || { log error "ssh requis pour l'installation distante"; exit 2; }
+  cmd_exists scp || { log error "scp requis pour l'installation distante"; exit 2; }
+
+  log info "Installation distante sur $DOMAIN (utilisateur $NAME)"
+
+  # 1. Creer l'utilisateur sudoer $NAME (si absent)
+  ssh "$DOMAIN" "sudo id -u $NAME >/dev/null 2>&1 || (sudo useradd -m -s /bin/bash $NAME && sudo usermod -aG sudo $NAME && echo '$NAME ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/$NAME)" \
+    || { log error "impossible de creer l'utilisateur $NAME sur $DOMAIN"; exit 2; }
+
+  # 2. Autoriser la cle d'installation (et clefs optionnelles)
+  local auth_keys="$HOME/.ssh/id_ed25519.pub"
+  [[ -f "$auth_keys" ]] || auth_keys="$HOME/.ssh/id_rsa.pub"
+  if [[ -f "$auth_keys" ]]; then
+    ssh "$DOMAIN" "sudo -u $NAME bash -c 'mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'" < "$auth_keys"
+    log info "cle d'installation autorisee pour $NAME sur $DOMAIN"
+  fi
+
+  # 3. Copier les scripts et la config
+  ssh "$DOMAIN" "sudo -u $NAME bash -c 'mkdir -p ~/beaut/scripts ~/beaut/deploy/files ~/beaut/state'" \
+    || { log error "impossible de creer l'arborescence sur $DOMAIN"; exit 2; }
+  scp -r "$SCRIPTS_DIR"/* "$DOMAIN:~/beaut/scripts/"
+  scp "$DEPLOY_DIR/config.env" "$DOMAIN:~/beaut/"
+  scp "$FILES_DIR/start.sh" "$DOMAIN:~/beaut/deploy/files/start.sh"
+  ssh "$DOMAIN" "sudo -u $NAME bash -c 'chmod +x ~/beaut/scripts/*.sh ~/beaut/scripts/lib/*.sh ~/beaut/deploy/files/start.sh'"
+
+  # 4. Git : depot de déploiement
+  ssh "$DOMAIN" "sudo -u $NAME bash -c 'cd ~/beaut && git init -q 2>/dev/null; git add -A; git commit -q -m \"deploy: installation initiale\" 2>/dev/null || true'"
+
+  # 5. WireGuard + lancement serveur
+  ssh "$DOMAIN" "sudo -u $NAME bash -c 'cd ~/beaut && export DOMAIN=$DOMAIN HTTP_PORT=$HTTP_PORT WG_PORT=$WG_PORT WG_NET=$WG_NET WG_SERVER_IP=$WG_SERVER_IP TOKEN_TTL_SECONDS=$TOKEN_TTL_SECONDS && bash scripts/wg_setup.sh && nohup bash scripts/http_server.sh > ~/beaut/state/http.log 2>&1 &'"
+
+  log info "Installation terminee sur $DOMAIN"
+  log info "Serveur de scripts : http://$DOMAIN:$HTTP_PORT"
+  log info "Node : curl http://$DOMAIN:$HTTP_PORT/work | sh"
+}
+
+# --- Installation locale (--no-root) ---------------------------------------
+local_install() {
+  echo "=== Installation beaut (local, sans root) ==="
+  local target="${STATE_DIR:-$DIR/state}"
+  mkdir -p "$target"
+  cp -r "$SCRIPTS_DIR"/* "$target/" 2>/dev/null || true
+  cp "$DEPLOY_DIR/config.env" "$target/"
+  cp "$FILES_DIR/start.sh" "$target/deploy/files/start.sh"
+  chmod +x "$target"/scripts/*.sh "$target"/scripts/lib/*.sh "$target/deploy/files/start.sh"
+
+  echo
+  echo "=== Terminé ==="
+  echo "Lancer : cd $target && bash deploy/files/start.sh &"
+  echo "Node   : curl http://$DOMAIN:$HTTP_PORT/work | sh"
+}
+
 if [[ $NO_ROOT -eq 1 ]]; then
-  echo "=== Installation beaut en mode non-root ==="
-  echo
-  echo "Vous n'avez pas les privilèges root. L'installation sera locale."
-  echo
-
-  # Demande confirmation des ports
-  echo "Configuration réseau :"
-  read -r -p "Port HTTP [$HTTP_PORT] : " hp < /dev/tty 2>/dev/null || read -r -p "Port HTTP [$HTTP_PORT] : " hp
-  [[ -n "$hp" ]] && HTTP_PORT="$hp"
-  read -r -p "Port WireGuard [$WG_PORT] : " wp < /dev/tty 2>/dev/null || read -r -p "Port WireGuard [$WG_PORT] : " wp
-  [[ -n "$wp" ]] && WG_PORT="$wp"
-  echo
-
-  # Demande confirmation des dossiers
-  echo "Répertoires :"
-  read -r -p "Répertoire d'état [$STATE_DIR] : " sd < /dev/tty 2>/dev/null || read -r -p "Répertoire d'état [$STATE_DIR] : " sd
-  [[ -n "$sd" ]] && STATE_DIR="$sd"
-  echo
-
-  export HTTP_PORT WG_PORT STATE_DIR
-
-  echo "[1/4] Création du répertoire d'état ($STATE_DIR)"
-  mkdir -p "$STATE_DIR"
-  chmod 700 "$STATE_DIR"
-
-  echo "[2/4] Génération des clés WireGuard (clé publique uniquement, pas d'interface)"
-  if command -v wg >/dev/null 2>&1; then
-    wg genkey | tee "$STATE_DIR/wg_private.key" | wg pubkey > "$STATE_DIR/wg_public.key"
-    chmod 600 "$STATE_DIR/wg_private.key"
-    echo "Clé publique : $(cat "$STATE_DIR/wg_public.key")"
-  else
-    echo "ATTENTION: wg non trouvé. Générez les clés manuellement plus tard."
-    : > "$STATE_DIR/wg_private.key"
-    : > "$STATE_DIR/wg_public.key"
-  fi
-
-  echo "[3/4] Installation des scripts et configuration"
-  mkdir -p "$STATE_DIR/bin"
-  cp -r "$SCRIPTS_DIR"/* "$STATE_DIR/bin/" 2>/dev/null || true
-  cp "$DEPLOY_DIR/config.env" "$STATE_DIR/" 2>/dev/null || true
-
-  echo "[4/4] Script de démarrage local ($STATE_DIR/bin/start.sh)"
-  cat > "$STATE_DIR/bin/start.sh" <<STARTEOF
-#!/usr/bin/env bash
-set -uo pipefail
-export DOMAIN=$DOMAIN HTTP_PORT=$HTTP_PORT WG_PORT=$WG_PORT
-export WG_NET=$WG_NET WG_SERVER_IP=$WG_SERVER_IP
-export LEASE_TTL_SECONDS=$LEASE_TTL_SECONDS HEARTBEAT_INTERVAL=$HEARTBEAT_INTERVAL
-export WORKER_STALE_SECONDS=$WORKER_STALE_SECONDS LOG_LEVEL=$LOG_LEVEL
-export NICE_ROOT=$NICE_ROOT NICE_VIP=$NICE_VIP NICE_GUEST=$NICE_GUEST
-export STATE_DIR=$STATE_DIR
-cd "$STATE_DIR/bin"
-exec bash http_server.sh
-STARTEOF
-  chmod +x "$STATE_DIR/bin/start.sh"
-
-  echo
-  echo "=== Installation non-root terminée ==="
-  echo "Pour lancer le serveur : $STATE_DIR/bin/start.sh &"
-  echo "Pour installer un agent : curl http://$DOMAIN:$HTTP_PORT/install | sh"
-  echo "Le fichier de config est dans : $STATE_DIR/config.env"
-  echo
-
+  local_install
 else
-  [[ $EUID -eq 0 ]] || { echo "deploy.sh doit être lancé en root (sudo ./deploy.sh) ou avec --no-root" >&2; exit 1; }
-
-  echo "=== Installation du serveur beaut sur $DOMAIN:$HTTP_PORT ==="
-  echo
-
-  echo "[1/6] Création du répertoire d'état ($STATE_DIR)"
-  mkdir -p "$STATE_DIR"
-  chmod 700 "$STATE_DIR"
-
-  echo "[2/6] Configuration de WireGuard"
-  bash "$SCRIPTS_DIR/wg_setup.sh"
-  echo "Clé publique WireGuard : $(cat "$STATE_DIR/wg_public.key")"
-  echo
-
-  echo "[3/6] Installation du service au démarrage"
-  SERVICE_FILE="/etc/systemd/system/beaut.service"
-  cat > "$SERVICE_FILE" <<SVCEOF
-[Unit]
-Description=beaut serveur de contrôle (pull-based)
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=$DEPLOY_DIR
-ExecStart=$DEPLOY_DIR/scripts/http_server.sh
-Restart=always
-User=$SUDO_USER
-
-[Install]
-WantedBy=multi-user.target
-SVCEOF
-
-  if command -v systemctl >/dev/null 2>&1; then
-    systemctl daemon-reload
-    systemctl enable beaut.service
-    systemctl start beaut.service
-    echo "Service systemd 'beaut' activé et démarré."
-  else
-    echo "ATTENTION: systemctl non trouvé. Lancez manuellement : $DEPLOY_DIR/scripts/http_server.sh &"
-  fi
-  echo
-
-  echo "[4/6] Ouverture du port HTTP ($HTTP_PORT)"
-  if command -v nft >/dev/null 2>&1; then
-    nft add rule inet beaut tcp dport "$HTTP_PORT" accept 2>/dev/null || true
-    nft add rule inet beaut udp dport "$WG_PORT" accept 2>/dev/null || true
-  elif command -v iptables >/dev/null 2>&1; then
-    iptables -I INPUT -p tcp --dport "$HTTP_PORT" -j ACCEPT 2>/dev/null || true
-    iptables -I INPUT -p udp --dport "$WG_PORT" -j ACCEPT 2>/dev/null || true
-  fi
-  echo "Ports $HTTP_PORT (HTTP) et $WG_PORT (WireGuard) ouverts."
-  echo
-
-  echo "[5/6] Vérification de l'installation"
-  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet beaut.service; then
-    echo "Le serveur beaut est en ligne sur http://$DOMAIN:$HTTP_PORT"
-  else
-    echo "Le serveur n'a pas pu démarrer automatiquement. Lancez :"
-    echo "  $DEPLOY_DIR/scripts/http_server.sh &"
-  fi
-  echo
-
-  echo "[6/6] Instructions pour les agents"
-  echo "Sur chaque nœud invité, exécuter (en tant qu'utilisateur non-root) :"
-  echo "  curl http://$DOMAIN:$HTTP_PORT/install | sh"
-  echo "Puis rejoindre le WireGuard avec la clé publique ci-dessus."
-  echo
-  echo "=== Installation terminée ==="
+  remote_install
 fi
