@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# http_server.sh — lance le gestionnaire HTTP via socat.
-# Une connexion = un handler (http_handler.sh). Le serveur ne calcule jamais.
+# http_server.sh — launch the HTTP manager through socat.
+# One connection = one handler (http_handler.sh). The server never computes.
 set -uo pipefail
 
-SDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-. "$SDIR/lib/core.sh"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/lib/core.sh"
 load_config
 
-cmd_exists socat || { log error "socat requis pour le serveur HTTP"; exit 2; }
+has_command socat || die "socat is required for the HTTP server"
 
 state_init
 
-log info "serveur HTTP sur $DOMAIN:$HTTP_PORT (serveur de scripts/tokens, pas d'execution)"
+log info "HTTP server on $SERVER_HOST:$HTTP_PORT (script/token server, no execution)"
 
-socat TCP-LISTEN:"$HTTP_PORT",fork EXEC:"bash $SDIR/http_handler.sh" 2>/dev/null
+socat TCP-LISTEN:"$HTTP_PORT",fork EXEC:"bash $SCRIPT_DIR/http_handler.sh" 2>/dev/null

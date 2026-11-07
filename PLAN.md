@@ -23,49 +23,59 @@ Plateforme de calcul partagé minimaliste. Le serveur ne calcule jamais : il **s
 | `/work/<token>` | GET | Renvoie la commande/dataset associée au token (si valide et non expiré) |
 | `/done/<token>` | POST | Le node POSTe son résultat ; le token lie travail et résultat |
 | `/get` | POST | Requête dataset sur mesure (corps `cle=val&cle=val`) ; privilèges vérifiés via token |
-| `/<chemin>` | GET | Arborescence `HTTP_FILE_ROOT` (dossier → premier `DEFAU*.sh`) |
-| autre | GET | `ERR404` (variable configurable) |
+| `/<chemin>` | GET | Arborescence `PUBLISHED_ROOT` (dossier → premier `DEFAU*.sh`) |
+| autre | GET | `NOT_FOUND_BODY` (variable configurable) |
 
 ## Parsing
-Aucune bibliothèque de parsing HTTP/AWK. On lit uniquement :
+Aucune bibliothèque de parsing HTTP. On lit uniquement :
 1. La première ligne (`METHOD /path HTTP/1.1`) pour extraire le chemin.
-2. Le corps brut (`cat`) pour les POST.
+2. Les en-têtes jusqu'à la ligne vide, pour `Content-Length`.
+3. Exactement `Content-Length` octets de corps pour les POST (jamais de `cat` bloquant sur un GET).
 
 ## Données (TSV unique)
 - `state/db.tsv` : une seule table avec colonne `type` (token, task, result, archive).
 - Archivage journalier sous `state/archive/YYYY-MM-DD/`.
-- `HIST_MEM_MAX = 20% de la RAM totale` : garde-fou désactivant l'archivage si la mémoire disponible est trop faible.
+- `ARCHIVE_MEMORY_DIVISOR` : l'archivage est ignoré si la RAM disponible est
+  inférieure ou égale à la RAM totale divisée par ce diviseur (défaut 5, soit 20%).
 
 ## Déploiement (`deploy.sh`) — deux temps, une bascule d'identité
-1. **`$SUDOER`** (root conseillé, demandé au lancement) applique `deploy/files/amorce.sh` :
-   crée `$NAME=beaut` (home standard `$HOME`, pas de `NAME_HOME`), autorise la clé
-   publique, installe la **copie root:root** des scripts et le helper `s$NAME`.
-2. Tout le reste se fait en **`$NAME`**, par clé uniquement (`BatchMode`, `publickey`),
-   sans mot de passe, dans `$HOME/.beaut` : `scripts/`, `deploy/`, `state/`, `shared/`.
+1. **`BOOTSTRAP_USER`** (root conseillé, demandé au lancement) applique
+   `deploy/files/bootstrap.sh` : crée `SERVICE_USER=beaut` (home standard
+   `$HOME`), autorise la clé publique, installe la **copie root:root** des
+   scripts et le helper `s$SERVICE_USER`.
+2. Tout le reste se fait en **`SERVICE_USER`**, par clé uniquement (`BatchMode`,
+   `publickey`), sans mot de passe, dans `$HOME/.beaut` : `scripts/`, `deploy/`,
+   `state/`, `shared/`.
 - `sudo` n'est accordé que pour les ressources spéciales : une seule règle
-  `NOPASSWD` vers `/usr/local/sbin/s$NAME` (réseau/WireGuard). Le helper n'exécute
-  que la copie root, jamais le code modifiable par `$NAME`.
+  `NOPASSWD` vers `/usr/local/sbin/s$SERVICE_USER` (réseau/WireGuard). Le helper
+  n'exécute que la copie root, jamais le code modifiable par `SERVICE_USER`.
 - WireGuard sécurise les connexions entre clés reconnues.
 - Serveur lancé en service utilisateur systemd (`deploy/files/beaut.service`), secours `setsid`.
 - À l'issue : le serveur est joignable, `curl /node | sh` récupère le script node.
 - Mise à jour et synchronisation des scripts par **git** (`git pull`).
 
+## Configuration
+Tout est défini dans `config.env` et `config.env.example` (le modèle sert aussi
+de schéma de repli). Le chargement se fait avec `set -a`, donc **tout est exporté
+automatiquement** : aucune liste d'export à maintenir.
+
 ## Fichiers clés
 ```
-config.env              variables d'environnement (éditables à la main)
-deploy.sh               amorçage distant SSH/SFTP (SUDOER puis NAME)
-deploy/files/amorce.sh  première application en root : utilisateur, clé, sudo limité
-deploy/files/sbeaut     helper root des ressources spéciales (installé en s$NAME)
+config.env                  variables d'environnement (éditables à la main)
+config.env.example          modèle + schéma de repli
+deploy.sh                   amorçage distant SSH/SFTP (BOOTSTRAP_USER puis SERVICE_USER)
+deploy/files/bootstrap.sh   première application en root : utilisateur, clé, sudo limité
+deploy/files/sbeaut         helper root des ressources spéciales (installé en s$SERVICE_USER)
 deploy/files/beaut.service  service utilisateur systemd
-deploy/files/start.sh   script de démarrage (fichier à part, jamais inline)
-scripts/http_server.sh  lance socat + http_handler.sh
-scripts/http_handler.sh handler serveur (routes + arborescence, pas d'exécution)
-scripts/http_exec.sh    script node (| sh), réclame + exécute + rapporte
-scripts/net.sh          WireGuard + pare-feu (source unique)
-scripts/wg_setup.sh     délègue à net.sh
-scripts/wg_join.sh      délègue à net.sh
-scripts/lib/core.sh     config, log, état
-scripts/lib/state.sh    TSV unique (find/append/update)
-state/db.tsv            base d'état (tokens, travaux, résultats)
-shared/                 arborescence HTTP servie (path = fichier, dossier = DEFAU*.sh)
+deploy/files/start.sh       script de démarrage (fichier à part, jamais inline)
+scripts/http_server.sh      lance socat + http_handler.sh
+scripts/http_handler.sh     handler serveur (routes + arborescence, pas d'exécution)
+scripts/node.sh             script node (| sh), réclame + exécute + rapporte
+scripts/network.sh          WireGuard + pare-feu (source unique)
+scripts/wireguard_setup.sh  délègue à network.sh
+scripts/wireguard_join.sh   délègue à network.sh
+scripts/lib/core.sh         chemins, config, log, état
+scripts/lib/state.sh        TSV unique (state_find/state_append/state_update)
+state/db.tsv                base d'état (tokens, travaux, résultats)
+shared/                     arborescence HTTP servie (path = fichier, dossier = DEFAU*.sh)
 ```

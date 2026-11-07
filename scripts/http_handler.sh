@@ -1,30 +1,28 @@
 #!/usr/bin/env bash
-# http_handler.sh — gestionnaire HTTP côté SERVEUR (une connexion = un handler).
-# Le serveur n'exécute rien : il sert des fichiers/scripts, crée et valide des tokens.
+# http_handler.sh — server-side HTTP handler (one connection per invocation).
+# The server never executes work: it serves files/scripts and validates tokens.
 #
-# Routes dynamiques (prioritaires) :
-#   GET  /work          -> crée un token, renvoie le token
-#   GET  /work/<token>  -> renvoie la commande associée au token
-#   POST /done/<token>  -> enregistre le résultat lié au token
-#   POST /get           -> requête dataset (corps cle=val&cle=val)
+# Dynamic routes (priority):
+#   GET  /work          -> create a token, return it
+#   GET  /work/<token>  -> return the command bound to the token
+#   POST /done/<token>  -> store the result bound to the token
+#   POST /get           -> dataset request (body: key=value&key=value)
 #
-# Route statique (tout le reste) : le path reflète l'arborescence $HTTP_FILE_ROOT
-#   /a/b/c              -> $HTTP_FILE_ROOT/a/b/c            (fichier)
-#   /a/b                -> $HTTP_FILE_ROOT/a/b/DEFAU*.sh    (dossier -> défaut)
+# Static route (everything else): the URL path mirrors $PUBLISHED_ROOT
+#   /a/b/c              -> $PUBLISHED_ROOT/a/b/c            (file)
+#   /a/b                -> $PUBLISHED_ROOT/a/b/DEFAU*.sh    (directory -> default)
 set -uo pipefail
 export LC_ALL=C
 
-SDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-. "$SDIR/lib/core.sh"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/lib/core.sh"
 load_config
 
-STATE_DIR="${STATE_DIR:-$DIR/state}"
-DB="$STATE_DIR/db.tsv"
-mkdir -p "$STATE_DIR"
-[[ -f "$DB" ]] || : > "$DB"
+STATE_DB="$STATE_DIR/db.tsv"
+state_init
 
-# --- réponses HTTP ----------------------------------------------------------
-raison() {
+# --- HTTP responses ---------------------------------------------------------
+reason_phrase() {
   case "$1" in
     200) printf 'OK' ;;
     400) printf 'Bad Request' ;;
@@ -35,51 +33,51 @@ raison() {
   esac
 }
 
-repondre() {
-  local code="$1" corps="${2:-}"
+send_response() {
+  local status_code="$1" response_body="${2:-}"
   printf 'HTTP/1.1 %s %s\r\nContent-Length: %s\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n%s' \
-    "$code" "$(raison "$code")" "${#corps}" "$corps"
+    "$status_code" "$(reason_phrase "$status_code")" "${#response_body}" "$response_body"
 }
 
-diffuser() {
-  local fichier="$1" taille
-  taille="$(wc -c < "$fichier")"
-  printf 'HTTP/1.1 200 OK\r\nContent-Length: %s\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n' "$taille"
-  cat -- "$fichier"
+send_file() {
+  local file_path="$1" file_size
+  file_size="$(wc -c < "$file_path")"
+  printf 'HTTP/1.1 200 OK\r\nContent-Length: %s\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n' "$file_size"
+  cat -- "$file_path"
 }
 
-# --- lecture de la requête --------------------------------------------------
-# 1. ligne de requête : METHODE /chemin HTTP/1.1
-IFS= read -r -t 5 ligne || exit 0
-ligne="${ligne%$'\r'}"
-methode="${ligne%% *}"
-chemin="${ligne#* }"; chemin="${chemin%% *}"
-chemin="${chemin#/}"; chemin="${chemin%%\?*}"
+# --- request parsing --------------------------------------------------------
+# 1. request line: METHOD /path HTTP/1.1
+IFS= read -r -t 5 request_line || exit 0
+request_line="${request_line%$'\r'}"
+http_method="${request_line%% *}"
+url_path="${request_line#* }"; url_path="${url_path%% *}"
+url_path="${url_path#/}"; url_path="${url_path%%\?*}"
 
-# 2. entêtes jusqu'à la ligne vide (on ne retient que Content-Length)
-longueur=""
-while IFS= read -r -t 5 entete; do
-  entete="${entete%$'\r'}"
-  [[ -z "$entete" ]] && break
-  case "${entete,,}" in
-    content-length:*) longueur="${entete#*:}"; longueur="${longueur//[[:space:]]/}" ;;
+# 2. headers up to the blank line (only Content-Length is kept)
+content_length=""
+while IFS= read -r -t 5 header; do
+  header="${header%$'\r'}"
+  [[ -z "$header" ]] && break
+  case "${header,,}" in
+    content-length:*) content_length="${header#*:}"; content_length="${content_length//[[:space:]]/}" ;;
   esac
 done
 
-# 3. corps brut (POST uniquement ; jamais de cat bloquant sur un GET)
-corps=""
-if [[ "${methode^^}" == "POST" ]]; then
-  if [[ "$longueur" =~ ^[0-9]+$ ]]; then
-    IFS= read -r -N "$longueur" corps || true
+# 3. raw body for POST only (never a blocking cat on GET)
+request_body=""
+if [[ "${http_method^^}" == "POST" ]]; then
+  if [[ "$content_length" =~ ^[0-9]+$ ]]; then
+    IFS= read -r -N "$content_length" request_body || true
   else
-    corps="$(cat)" || true
+    request_body="$(cat)" || true
   fi
 fi
 
-# --- extraction d'un paramètre (cle=val&cle=val) ----------------------------
-get_param() {
-  local cle="$1"
-  printf '%s' "$corps" | awk -F'[&?]' -v k="$cle" '{
+# --- form parameter extraction (key=value&key=value) ------------------------
+get_form_param() {
+  local key="$1"
+  printf '%s' "$request_body" | awk -F'[&?]' -v k="$key" '{
     for (i=1;i<=NF;i++) {
       split($i,a,"=")
       if (a[1]==k) { print a[2]; exit }
@@ -87,117 +85,118 @@ get_param() {
   }'
 }
 
-# --- archivage journalier d'un résultat -------------------------------------
-archive_daily() {
-  local token="$1" resultat="$2"
-  local jour; jour="$(date +%F)"
-  local ad="$STATE_DIR/archive/$jour"
-  mkdir -p "$ad"
+# --- daily archive of a result ----------------------------------------------
+archive_result() {
+  local token="$1" result="$2"
+  local day; day="$(date +%F)"
+  local archive_dir="$STATE_DIR/archive/$day"
+  mkdir -p "$archive_dir"
 
-  local total_kb dispo_kb hist_max
+  local total_kb available_kb memory_threshold_kb
   total_kb="$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
-  dispo_kb="$(awk '/MemAvailable/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
-  hist_max=$(( total_kb / HIST_MEM_MAX_RATIO ))
-  if [[ "$dispo_kb" -le "$hist_max" ]]; then
-    log warn "archive ignorée : RAM dispo=${dispo_kb}KB <= HIST_MEM_MAX=${hist_max}KB"
+  available_kb="$(awk '/MemAvailable/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+  memory_threshold_kb=$(( total_kb / ARCHIVE_MEMORY_DIVISOR ))
+  if [[ "$available_kb" -le "$memory_threshold_kb" ]]; then
+    log warn "archive skipped: available RAM=${available_kb}KB <= threshold=${memory_threshold_kb}KB"
     return 0
   fi
 
-  local ts; ts="$(date +%s)"
-  local node; node="$(hostname 2>/dev/null || echo unknown)"
-  printf 'archive\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$jour" "$token" "$node" "$resultat" "$ts" "" "" >> "$DB"
-  printf '%s\t%s\t%s\t%s\n' "$token" "$node" "$resultat" "$ts" >> "$ad/results.tsv"
+  local timestamp; timestamp="$(date +%s)"
+  local node_name; node_name="$(hostname 2>/dev/null || echo unknown)"
+  printf 'archive\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$day" "$token" "$node_name" "$result" "$timestamp" "" "" >> "$STATE_DB"
+  printf '%s\t%s\t%s\t%s\n' "$token" "$node_name" "$result" "$timestamp" >> "$archive_dir/results.tsv"
 }
 
-# --- arborescence statique --------------------------------------------------
-defaut_de() {
-  local dossier="$1" f
-  for f in "$dossier"/DEFAU*.sh; do
-    if [[ -f "$f" ]]; then printf '%s' "$f"; return 0; fi
+# --- static tree ------------------------------------------------------------
+find_default_script() {
+  local directory="$1" candidate
+  for candidate in "$directory"/DEFAU*.sh; do
+    if [[ -f "$candidate" ]]; then printf '%s' "$candidate"; return 0; fi
   done
   return 1
 }
 
-servir_arbre() {
-  local chemin="$1" racine racine_reelle cible
-  racine="${HTTP_FILE_ROOT:-}"
-  if [[ -z "$racine" || ! -d "$racine" ]]; then
-    repondre 404 "${ERR404:-404}"; return
+serve_tree() {
+  local requested_path="$1" root_dir real_root target
+  root_dir="${PUBLISHED_ROOT:-}"
+  if [[ -z "$root_dir" || ! -d "$root_dir" ]]; then
+    send_response 404 "${NOT_FOUND_BODY:-404}"; return
   fi
-  racine_reelle="$(realpath -m -- "$racine" 2>/dev/null || printf '%s' "$racine")"
+  real_root="$(realpath -m -- "$root_dir" 2>/dev/null || printf '%s' "$root_dir")"
 
-  case "$chemin" in
-    *..*|*\\*) repondre 404 "${ERR404:-404}"; return ;;
+  case "$requested_path" in
+    *..*|*\\*) send_response 404 "${NOT_FOUND_BODY:-404}"; return ;;
   esac
 
-  cible="$(realpath -m -- "$racine/$chemin" 2>/dev/null || true)"
-  if [[ -z "$cible" || ( "$cible" != "$racine_reelle" && "$cible" != "$racine_reelle"/* ) ]]; then
-    repondre 404 "${ERR404:-404}"; return
+  target="$(realpath -m -- "$root_dir/$requested_path" 2>/dev/null || true)"
+  if [[ -z "$target" || ( "$target" != "$real_root" && "$target" != "$real_root"/* ) ]]; then
+    send_response 404 "${NOT_FOUND_BODY:-404}"; return
   fi
 
-  if [[ -d "$cible" ]]; then
-    cible="$(defaut_de "$cible")" || { repondre 404 "${ERR404:-404}"; return; }
+  if [[ -d "$target" ]]; then
+    target="$(find_default_script "$target")" \
+      || { send_response 404 "${NOT_FOUND_BODY:-404}"; return; }
   fi
 
-  if [[ -f "$cible" ]]; then
-    diffuser "$cible"
+  if [[ -f "$target" ]]; then
+    send_file "$target"
   else
-    repondre 404 "${ERR404:-404}"
+    send_response 404 "${NOT_FOUND_BODY:-404}"
   fi
 }
 
-# --- routage ----------------------------------------------------------------
-case "$chemin" in
+# --- routing ----------------------------------------------------------------
+case "$url_path" in
   work)
-    token="$(uid | tr -d '.')"
-    ts="$(date +%s)"
-    printf 'token\t%s\techo hello-world\tpending\t%s\t\t\t\n' "$token" "$ts" >> "$DB"
-    repondre 200 "$token"
+    token="$(new_id | tr -d '.')"
+    timestamp="$(date +%s)"
+    printf 'token\t%s\techo hello-world\tpending\t%s\t\t\t\n' "$token" "$timestamp" >> "$STATE_DB"
+    send_response 200 "$token"
     ;;
   work/*)
-    token="${chemin#work/}"
-    ligne_token="$(tsv_find "$DB" 2 "$token")"
-    if [[ -z "$ligne_token" ]]; then
-      repondre 404 "${ERR404:-404}"
+    token="${url_path#work/}"
+    token_row="$(state_find "$STATE_DB" 2 "$token")"
+    if [[ -z "$token_row" ]]; then
+      send_response 404 "${NOT_FOUND_BODY:-404}"
     else
-      type="$(printf '%s' "$ligne_token" | cut -f1)"
-      statut="$(printf '%s' "$ligne_token" | cut -f4)"
-      commande="$(printf '%s' "$ligne_token" | cut -f3)"
-      if [[ "$type" != "token" ]]; then
-        repondre 404 "${ERR404:-404}"
-      elif [[ "$statut" == "pending" || "$statut" == "" ]]; then
-        repondre 200 "$commande"
+      row_type="$(printf '%s' "$token_row" | cut -f1)"
+      token_status="$(printf '%s' "$token_row" | cut -f4)"
+      task_command="$(printf '%s' "$token_row" | cut -f3)"
+      if [[ "$row_type" != "token" ]]; then
+        send_response 404 "${NOT_FOUND_BODY:-404}"
+      elif [[ "$token_status" == "pending" || "$token_status" == "" ]]; then
+        send_response 200 "$task_command"
       else
-        repondre 410 "token expiré ou utilisé ($statut)"
+        send_response 410 "token expired or already used ($token_status)"
       fi
     fi
     ;;
   done/*)
-    token="${chemin#done/}"
+    token="${url_path#done/}"
     if [[ -z "$token" ]]; then
-      repondre 400 "token manquant"
-    elif [[ -z "$(tsv_find "$DB" 2 "$token")" ]]; then
-      repondre 404 "${ERR404:-404}"
+      send_response 400 "missing token"
+    elif [[ -z "$(state_find "$STATE_DB" 2 "$token")" ]]; then
+      send_response 404 "${NOT_FOUND_BODY:-404}"
     else
-      archive_daily "$token" "$corps"
-      tsv_update "$DB" 4 "done" 2 "$token" 2>/dev/null || true
-      repondre 200 "confirmé: $token"
+      archive_result "$token" "$request_body"
+      state_update "$STATE_DB" 4 "done" 2 "$token" 2>/dev/null || true
+      send_response 200 "confirmed: $token"
     fi
     ;;
   get)
-    req_token="$(get_param token)"
-    dataset="$(get_param dataset)"
-    if [[ -z "$req_token" ]]; then
-      repondre 400 "token manquant"
+    request_token="$(get_form_param token)"
+    dataset="$(get_form_param dataset)"
+    if [[ -z "$request_token" ]]; then
+      send_response 400 "missing token"
     elif [[ -z "$dataset" ]]; then
-      repondre 400 "dataset manquant"
-    elif [[ -z "$(tsv_find "$DB" 2 "$req_token")" ]]; then
-      repondre 403 "token inconnu"
+      send_response 400 "missing dataset"
+    elif [[ -z "$(state_find "$STATE_DB" 2 "$request_token")" ]]; then
+      send_response 403 "unknown token"
     else
-      repondre 200 "dataset $dataset alloué au token $req_token"
+      send_response 200 "dataset $dataset granted to token $request_token"
     fi
     ;;
   *)
-    servir_arbre "$chemin"
+    serve_tree "$url_path"
     ;;
 esac

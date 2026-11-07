@@ -7,67 +7,72 @@ scripts** et **valide des tokens**, des nodes qui viennent les chercher
 ## Déploiement
 
 ```bash
-./deploy.sh              # distant : SSH/SFTP sur $DOMAIN
-./deploy.sh --no-root    # local, sans privilèges
+./deploy.sh              # remote: SSH/SFTP to $SERVER_HOST
+./deploy.sh --no-root    # local, no privileges
 ```
 
-Le déploiement distant se fait en deux temps, avec une seule bascule d'identité :
+The remote deployment has two phases and a single identity switch:
 
-1. **`$SUDOER`** (root conseillé, demandé au lancement) applique
-   `deploy/files/amorce.sh` : crée `$NAME=beaut`, autorise votre clé publique,
-   installe la copie root des scripts et le helper `s$NAME`.
-2. Tout le reste se fait en **`$NAME`**, par clé uniquement (aucun mot de passe),
-   dans `$HOME/.beaut` : `scripts/`, `deploy/`, `state/`, `shared/`.
+1. **`BOOTSTRAP_USER`** (root recommended, prompted at launch) applies
+   `deploy/files/bootstrap.sh`: creates `SERVICE_USER=beaut`, authorizes your
+   public key, installs the root-owned script copy and the `s$SERVICE_USER` helper.
+2. Everything else runs as **`SERVICE_USER`**, key-only (no password), inside
+   `$HOME/.beaut`: `scripts/`, `deploy/`, `state/`, `shared/`.
 
-WireGuard n'utilise qu'une règle sudo limitée : `NOPASSWD` vers
-`/usr/local/sbin/s$NAME`. Le helper ne lit que la copie root
-(`/usr/local/lib/beaut`), jamais le code modifiable par l'utilisateur.
+WireGuard uses a single scoped sudo rule: `NOPASSWD` to
+`/usr/local/sbin/s$SERVICE_USER`. The helper only reads the root copy
+(`/usr/local/lib/beaut`), never user-writable code.
+
+## Configuration
+
+All defaults live in `config.env.example`, which doubles as the fallback schema;
+`config.env` overrides it. Files are sourced with `set -a`, so every variable is
+exported automatically — no export list to maintain.
+
+- `SERVICE_USER`, `BOOTSTRAP_USER`, `SSH_PRIVATE_KEY`: identity and first connection
+- `SERVICE_ROOT`, `STATE_DIR`, `PUBLISHED_ROOT`: layout and served tree
+- `SERVER_HOST` / `HTTP_PORT`: control server address
+- `WG_PORT` / `WG_NETWORK` / `WG_SERVER_IP`: WireGuard
+- `TOKEN_TTL_SECONDS`: token lifetime
+- `NOT_FOUND_BODY`, `ARCHIVE_MEMORY_DIVISOR`, `LOG_LEVEL`
+
+`config.env` is git-ignored (never commit local configuration).
 
 ## Routes HTTP
 
-| Route | Rôle |
+| Route | Role |
 |-------|------|
-| `GET /work` | crée un token, renvoie le token |
-| `GET /work/<token>` | renvoie la commande associée |
-| `POST /done/<token>` | enregistre le résultat lié au token |
-| `POST /get` | requête dataset (`cle=val&cle=val`) |
-| `GET /<chemin>` | arborescence `HTTP_FILE_ROOT` (lecture seule) |
+| `GET /work` | creates a token, returns it |
+| `GET /work/<token>` | returns the bound command |
+| `POST /done/<token>` | records the result bound to the token |
+| `POST /get` | dataset request (`key=value&key=value`) |
+| `GET /<path>` | `PUBLISHED_ROOT` tree (read-only) |
 
-La route statique reflète l'arborescence : `/a/b/c` sert `$HTTP_FILE_ROOT/a/b/c`,
-et un dossier sert son premier `DEFAU*.sh` (`/backdoors` →
-`$HTTP_FILE_ROOT/backdoors/DEFAU*.sh`). Aucune exécution côté serveur.
+The static route mirrors the tree: `/a/b/c` serves `$PUBLISHED_ROOT/a/b/c`, and a
+directory serves its first `DEFAU*.sh` (`/backdoors` →
+`$PUBLISHED_ROOT/backdoors/DEFAU*.sh`). Nothing is executed server-side.
 
 ## Node
 
 ```bash
-curl -fsS http://$DOMAIN:$HTTP_PORT/node | sh
+curl -fsS http://$SERVER_HOST:$HTTP_PORT/node | sh
 ```
 
-Le node réclame un token, récupère la commande, l'exécute localement et POSTe le
-résultat sur `/done/<token>`.
+The node claims a token, fetches the command, runs it locally and POSTs the
+result to `/done/<token>`.
 
-## Configuration (`config.env`)
+## Files
 
-- `NAME`, `SUDOER`, `SSH_KEY` : identité, première connexion, clé privée locale
-- `DOMAIN` / `HTTP_PORT` : adresse et port du serveur
-- `WG_PORT` / `WG_NET` / `WG_SERVER_IP` : WireGuard
-- `TOKEN_TTL_SECONDS` : validité d'un token
-- `HTTP_FILE_ROOT` : racine de l'arborescence servie (défaut `$DIR/shared`)
-- `ERR404`, `HIST_MEM_MAX_RATIO`, `LOG_LEVEL`
-
-`config.env` est ignoré par git (ne jamais committer de config locale).
-
-## Fichiers
-
-- `deploy.sh` — amorçage distant (SUDOER → NAME)
-- `deploy/files/amorce.sh` — première application en root
-- `deploy/files/sbeaut` — helper root des ressources spéciales (installé en `s$NAME`)
-- `deploy/files/beaut.service` — service utilisateur systemd
-- `deploy/files/start.sh` — démarrage du serveur (fichier à part, jamais inline)
+- `deploy.sh` — remote bootstrap (BOOTSTRAP_USER → SERVICE_USER)
+- `deploy/files/bootstrap.sh` — first application as root
+- `deploy/files/sbeaut` — root helper for privileged resources (installed as `s$SERVICE_USER`)
+- `deploy/files/beaut.service` — systemd user service
+- `deploy/files/start.sh` — server launcher (standalone file, never inline)
 - `scripts/http_server.sh` — `socat` + `http_handler.sh`
-- `scripts/http_handler.sh` — routes + arborescence, sans exécution
-- `scripts/http_exec.sh` — script node (`| sh`)
-- `scripts/net.sh` — WireGuard + pare-feu (source unique)
-- `scripts/lib/core.sh` / `scripts/lib/state.sh` — config/log et TSV unique
-- `state/db.tsv` — tokens, travaux, résultats
-- `shared/` — arborescence HTTP publiée
+- `scripts/http_handler.sh` — routes + tree, no execution
+- `scripts/node.sh` — node script (`| sh`)
+- `scripts/network.sh` — WireGuard + firewall (single source)
+- `scripts/wireguard_setup.sh` / `scripts/wireguard_join.sh` — delegate to `network.sh`
+- `scripts/lib/core.sh` / `scripts/lib/state.sh` — paths/config/log and the single TSV
+- `state/db.tsv` — tokens, tasks, results
+- `shared/` — published HTTP tree

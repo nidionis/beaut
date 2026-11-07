@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# sbeaut — ressources spéciales (réseau) accordées à $NAME via sudo limité.
-# Installé root:root en /usr/local/sbin/s<NAME>. Ne lit QUE la copie root des
-# scripts (/usr/local/lib/beaut), jamais l'arborescence modifiable de l'utilisateur.
+# sbeaut — privileged resources (network) granted to SERVICE_USER via scoped
+# sudo. Installed root:root as /usr/local/sbin/s<SERVICE_USER>. It only runs the
+# root-owned copy of the scripts, never the user-writable tree.
 set -euo pipefail
 
-RACINE=/usr/local/lib/beaut
+ROOT_LIB_DIR=/usr/local/lib/beaut
 
-case "${1:-tout}" in
-  tout|"") bash "$RACINE/scripts/wg_setup.sh" ;;
-  *)       bash "$RACINE/scripts/net.sh" "$@" ;;
+case "${1:-all}" in
+  all|"") bash "$ROOT_LIB_DIR/scripts/wireguard_setup.sh" ;;
+  *)      bash "$ROOT_LIB_DIR/scripts/network.sh" "$@" ;;
 esac

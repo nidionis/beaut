@@ -1,35 +1,35 @@
 #!/usr/bin/env bash
-# lib/state.sh — TSV unique (state/db.tsv)
-# Colonnes : type | id | valeur1 | valeur2 | valeur3 | valeur4 | valeur5 | ts
-#   type=token : token | commande | statut | created_at | worker_ip | resultat | confirme_at
-#   type=task  : task | dataset | commande | statut | created_at | ... | ...
-#   type=result : token | node | resultat | ts | ... | ... | ...
-#   type=archive : jour | token | node | resultat | ts | ... | ...
-tsv_find() {
-  local file="${1:?fichier manquant}"
-  local col="${2:?colonne manquante}"
-  local val="${3:?valeur manquante}"
-  awk -F'\t' -v c="$col" -v v="$val" '$c==v{print; exit}' "$file"
+# lib/state.sh — single TSV table (state/db.tsv).
+# Columns: type | id | value1 | value2 | value3 | value4 | value5 | timestamp
+#   type=token   : token | command | status | created_at | worker_ip | result | confirmed_at
+#   type=task    : task | dataset | command | status | created_at | ... | ...
+#   type=result  : token | node | result | timestamp | ... | ...
+#   type=archive : day | token | node | result | timestamp | ... | ...
+state_find() {
+  local file="${1:?missing file}"
+  local column="${2:?missing column}"
+  local value="${3:?missing value}"
+  awk -F'\t' -v c="$column" -v v="$value" '$c==v{print; exit}' "$file"
 }
 
-tsv_append() {
-  local file="${1:?fichier manquant}"; shift
+state_append() {
+  local file="${1:?missing file}"; shift
   local line=""
-  for champ in "$@"; do
-    line+="$champ"$'\t'
+  for field in "$@"; do
+    line+="$field"$'\t'
   done
   line="${line%$'\t'}"
   printf '%s\n' "$line" >> "$file"
 }
 
-tsv_update() {
-  local file="${1:?fichier manquant}"
-  local set_col="${2:?colonne à modifier manquante}"
-  local set_val="${3:?valeur manquante}"
-  local match_col="${4:?colonne de correspondance manquante}"
-  local match_val="${5:?valeur de correspondance manquante}"
+state_update() {
+  local file="${1:?missing file}"
+  local set_column="${2:?missing column to update}"
+  local set_value="${3:?missing value}"
+  local match_column="${4:?missing match column}"
+  local match_value="${5:?missing match value}"
   local tmp; tmp="$(mktemp)"
-  awk -F'\t' -v sc="$set_col" -v sv="$set_val" -v mc="$match_col" -v mv="$match_val" \
+  awk -F'\t' -v sc="$set_column" -v sv="$set_value" -v mc="$match_column" -v mv="$match_value" \
     'BEGIN{OFS="\t"} $mc==mv{$sc=sv} {print}' "$file" > "$tmp"
   mv "$tmp" "$file"
 }
