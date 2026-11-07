@@ -6,23 +6,21 @@ pure bash, architecture pull-based de type BOINC.
 Le serveur ne contacte jamais les agents : ce sont les agents qui viennent
 chercher le travail (beacon → get task → execute → report back).
 
-## Déploiement rapide
-
-### 1. Sur le serveur de contrôle (DOMAIN=192.168.8.240)
+## Déploiement du serveur (une fois, en root)
 
 ```bash
-# Configuration
-cp config.env.example config.env
-# (optionnel) adaptez config.env
-
-# Installation de beaut.sh dans le PATH
-./deploy.sh install
-
-# Lancement du serveur (WireGuard + HTTP)
-beaut.sh server
+sudo ./deploy.sh
 ```
 
-Le serveur expose 4 endpoints HTTP :
+Ce script installe uniquement l'infrastructure de contrôle sur l'hôte :
+
+1. crée le répertoire d'état (`state/`) ;
+2. configure WireGuard (`wg_setup.sh`) ;
+3. installe un service systemd (`beaut.service`) qui lance le serveur HTTP au démarrage ;
+4. ouvre les ports HTTP et WireGuard dans le pare-feu ;
+5. vérifie que le service est en ligne.
+
+Le serveur expose quatre endpoints HTTP :
 
 | Endpoint | Rôle |
 |----------|------|
@@ -31,44 +29,46 @@ Le serveur expose 4 endpoints HTTP :
 | `/give` | Un agent s'enregistre, envoie un heartbeat, ou rapporte un résultat |
 | `/stats` | Affiche l'état du serveur (workers, tâches) |
 
-### 2. Sur un agent (nœud invité/esclave)
+## Installation d'un agent (sur chaque nœud invité)
+
+Sur chaque machine qui doit exécuter des tâches (en tant qu'utilisateur
+non-root) :
 
 ```bash
-# Rejoindre le WireGuard (nécessite la clé publique du serveur)
-beaut.sh agent  # ou wg_join.sh <cle_pub_serveur> puis beaut.sh agent
-
-# Ou installation one-liner depuis le serveur
 curl http://$DOMAIN:$HTTP_PORT/install | sh
 ```
 
-### 3. Soumettre une tâche
+Puis rejoindre le WireGuard avec la clé publique du serveur :
 
 ```bash
-beaut.sh submit 'echo hello-world'
-beaut.sh status <task_id>
-beaut.sh result <task_id>
+wg_join.sh <cle_publique_serveur>
 ```
 
-### 4. Démonstration complète (serveur + agent + docker-compose)
+## Configuration
 
-```bash
-./deploy.sh demo
-```
+Toute la configuration se fait dans `config.env` (éditer à la main) :
 
-La démo lance le serveur, un agent, crée un `docker-compose.yml` hello-world,
-soumet la tâche et affiche le résultat.
+- `DOMAIN` / `HTTP_PORT` : adresse et port du serveur de contrôle
+- `WG_PORT` / `WG_NET` / `WG_SERVER_IP` : configuration WireGuard
+- `LEASE_TTL_SECONDS` : durée d'un bail d'exécution
+- `HEARTBEAT_INTERVAL` : intervalle entre deux heartbeats
+- `WORKER_STALE_SECONDS` : délai avant qu'un worker soit considéré mort
+- `NICE_ROOT` / `NICE_VIP` / `NICE_GUEST` : priorités d'exécution
+
+Le fichier `config.env` est ignoré par git (ne jamais committer de config locale).
 
 ## Architecture
 
 - **WireGuard** : VPN entre le serveur et tous les agents (IP virtuelles stables,
-  trafic agent↔agent direct sans reverse-SSH).
-- **HTTP mini-server** (`socat`) : endpoints `/install`, `/ask`, `/give`, `/stats`,
-  max 2 requêtes concurrentes.
+  trafic agent↔agent direct sans reverse-SSH ni tunnel SSH).
+- **HTTP mini-server** (`socat`) : endpoints `/install`, `/ask`, `/give`, `/stats`.
 - **État** : fichiers TSV plats sous `state/` (workers, tasks, assignments,
   workers.trusted), protégés par `flock` + `mv` atomique.
 - **Priorités nice** : root/admin `-20`, vip `0`, invité/esclave `+19`.
 - **Watchdog** : maintient en vie un service (docker, systemctl, cron, commande
   simple) sur chaque agent.
+- **Mots-clés futurs** : `scripts/cmds/<mot-clef>/<numero>` (install, give, use,
+  buy, get, send, sell, del) pour le déploiement par chemin (non encore utilisé).
 
 ## Exemple : déployer un docker-compose hello-world
 
@@ -81,8 +81,8 @@ nice de son rôle et rapporte le résultat.
 
 ## Fichiers
 
-- `config.env` / `config.env.example` — configuration
-- `deploy.sh` — point d'entrée (installe `beaut.sh`)
+- `config.env` / `config.env.example` — configuration (éditable à la main)
+- `deploy.sh` — installation du serveur (root, une seule fois)
 - `beaut.sh` — CLI utilisateur (installé par `deploy.sh install`)
 - `scripts/lib/core.sh` — helpers pur bash (config, logging, TSV, nice)
 - `scripts/lib/http.sh` — client HTTP pur bash (/dev/tcp)
@@ -95,3 +95,4 @@ nice de son rôle et rapporte le résultat.
 - `scripts/actions/{install,ask,give,stats}.sh` — endpoints HTTP
 - `scripts/agent.sh` — agent worker + watchdog
 - `scripts/client.sh` — client donneur de tâches
+- `scripts/cmds/<mot-clef>/<numero>` — commandes par mot-clé (futur)

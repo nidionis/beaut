@@ -1,213 +1,107 @@
 #!/usr/bin/env bash
-# deploy.sh — point d'entrée unique de beaut.
+# deploy.sh — installation du serveur de contrôle beaut sur l'hôte (root requis).
+#
+# Ce script ne fait qu'une chose : préparer l'hôte pour qu'il serve de point de
+# contrôle (le "C2 légal"). Il doit être exécuté une fois, avec des privilèges
+# root, sur la machine qui portera DOMAIN:$HTTP_PORT.
+#
+# Aucune tâche n'est soumise ici, aucun agent n'est lancé. Ce fichier installe
+# uniquement l'infrastructure serveur : WireGuard + serveur HTTP + service au
+# démarrage. Toute configuration ultérieure se fait dans config.env.
+#
+# Usage : sudo ./deploy.sh
+
 set -uo pipefail
+
+[[ $EUID -eq 0 ]] || { echo "deploy.sh doit être lancé en root (sudo ./deploy.sh)" >&2; exit 1; }
 
 DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$DEPLOY_DIR/scripts"
 
+# Charge la config (commentée, éditable à la main)
 . "$DEPLOY_DIR/config.env" 2>/dev/null || . "$DEPLOY_DIR/config.env.example"
 [[ -f "$DEPLOY_DIR/.env" ]] && . "$DEPLOY_DIR/.env"
 export NAME DIR STATE_DIR DOMAIN HTTP_PORT WG_PORT WG_NET WG_SERVER_IP \
   LEASE_TTL_SECONDS HEARTBEAT_INTERVAL WORKER_STALE_SECONDS LOG_LEVEL \
   NICE_ROOT NICE_VIP NICE_GUEST
 
-# Source les libs et scripts (SCRIPS_DIR est préservé par core.sh)
+# Source les libs (SCRIPS_DIR est préservé par core.sh)
 . "$SCRIPTS_DIR/lib/core.sh"
 SCRIPTS_DIR="$DEPLOY_DIR/scripts"
-. "$SCRIPTS_DIR/lib/http.sh"
-. "$SCRIPTS_DIR/agent.sh"
-. "$SCRIPTS_DIR/client.sh"
 
-BEAUT_BIN="/usr/local/bin/beaut.sh"
+echo "=== Installation du serveur beaut sur $DOMAIN:$HTTP_PORT ==="
+echo
 
-usage() { echo "usage: deploy.sh {server|agent|install|demo|init|status|list}"; echo
-  echo "  server   — lance WireGuard + serveur HTTP (doit tourner sur DOMAIN)"
-  echo "  agent    — lance un agent worker (pull-based)"
-  echo "  install  — installe beaut.sh dans le PATH (ou local si pas de droits root)"
-  echo "  demo     — démo complète : serveur + agent + tâche docker-compose hello-world"
-  echo "  init     — initialise l'état (state/)"
-  echo "  status   — affiche les stats du serveur"
-  echo "  list     — alias de status"; }
+# --- 1. Répertoire d'état ---
+echo "[1/6] Création du répertoire d'état ($STATE_DIR)"
+mkdir -p "$STATE_DIR"
+chmod 700 "$STATE_DIR"
 
-cmd_init() { state_init; log info "état initialisé dans $STATE_DIR"; }
+# --- 2. WireGuard (nécessite root) ---
+echo "[2/6] Configuration de WireGuard"
+bash "$SCRIPTS_DIR/wg_setup.sh"
+echo "Clé publique WireGuard : $(cat "$STATE_DIR/wg_public.key")"
+echo
 
-cmd_server() {
-  cmd_init
-  log info "démarrage WireGuard serveur"
-  bash "$SCRIPTS_DIR/wg_setup.sh"
-  log info "démarrage serveur HTTP sur $DOMAIN:$HTTP_PORT"
-  bash "$SCRIPTS_DIR/http_server.sh"
-}
+# --- 3. Service au démarrage (nécessite root) ---
+echo "[3/6] Installation du service au démarrage"
+SERVICE_FILE="/etc/systemd/system/beaut.service"
+cat > "$SERVICE_FILE" <<SVCEOF
+[Unit]
+Description=beaut serveur de contrôle (pull-based)
+After=network.target
 
-cmd_agent() {
-  local wid="${1:-$(hostname)}"
-  export WORKER_ID="$wid"
-  bash "$SCRIPTS_DIR/agent.sh" run "$wid"
-}
+[Service]
+Type=simple
+WorkingDirectory=$DEPLOY_DIR
+ExecStart=$DEPLOY_DIR/scripts/http_server.sh
+Restart=always
+User=$SUDO_USER
 
-cmd_install() {
-  local target
-  if [[ -w /usr/local/bin ]] || (sudo -n true 2>/dev/null); then
-    target="$BEAUT_BIN"
-    log info "installation de beaut.sh dans $target"
-  else
-    target="$DEPLOY_DIR/beaut.sh"
-    log info "pas de droits root — installation locale dans $target"
-  fi
+[Install]
+WantedBy=multi-user.target
+SVCEOF
 
-  cat > "$target" <<BEAUT_SCRIPT
-#!/usr/bin/env bash
-# beaut.sh — point d'entrée utilisateur de beaut
-set -uo pipefail
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl daemon-reload
+  systemctl enable beaut.service
+  systemctl start beaut.service
+  echo "Service systemd 'beaut' activé et démarré."
+else
+  echo "ATTENTION: systemctl non trouvé. Le service n'a pas été installé au démarrage."
+  echo "Lancez manuellement : $DEPLOY_DIR/scripts/http_server.sh &"
+fi
+echo
 
-ROOT_DIR="$DEPLOY_DIR"
-SCRIPS_DIR="\$ROOT_DIR/scripts"
-. "\$ROOT_DIR/config.env" 2>/dev/null || . "\$ROOT_DIR/config.env.example"
-[[ -f "\$ROOT_DIR/.env" ]] && . "\$ROOT_DIR/.env"
-export NAME DIR STATE_DIR DOMAIN HTTP_PORT WG_PORT WG_NET WG_SERVER_IP \
-  LEASE_TTL_SECONDS HEARTBEAT_INTERVAL WORKER_STALE_SECONDS LOG_LEVEL \
-  NICE_ROOT NICE_VIP NICE_GUEST
+# --- 4. Ouverture du port HTTP (nécessite root) ---
+echo "[4/6] Ouverture du port HTTP ($HTTP_PORT)"
+if command -v nft >/dev/null 2>&1; then
+  nft add rule inet beaut tcp dport "$HTTP_PORT" accept 2>/dev/null || true
+elif command -v iptables >/dev/null 2>&1; then
+  iptables -I INPUT -p tcp --dport "$HTTP_PORT" -j ACCEPT 2>/dev/null || true
+fi
+if command -v nft >/dev/null 2>&1; then
+  nft add rule inet beaut udp dport "$WG_PORT" accept 2>/dev/null || true
+elif command -v iptables >/dev/null 2>&1; then
+  iptables -I INPUT -p udp --dport "$WG_PORT" -j ACCEPT 2>/dev/null || true
+fi
+echo "Ports $HTTP_PORT (HTTP) et $WG_PORT (WireGuard) ouverts."
+echo
 
-. "\$SCRIPS_DIR/lib/core.sh"
-SCRIPS_DIR="\$ROOT_DIR/scripts"
-. "\$SCRIPS_DIR/lib/http.sh"
+# --- 5. Vérification ---
+echo "[5/6] Vérification de l'installation"
+if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet beaut.service; then
+  echo "Le serveur beaut est en ligne sur http://$DOMAIN:$HTTP_PORT"
+else
+  echo "Le serveur n'a pas pu démarrer automatiquement. Lancez :"
+  echo "  $DEPLOY_DIR/scripts/http_server.sh &"
+fi
+echo
 
-cmd="\${1:-}"; shift || true
-
-case "\$cmd" in
-  server)
-    state_init
-    bash "\$SCRIPS_DIR/wg_setup.sh"
-    bash "\$SCRIPS_DIR/http_server.sh"
-    ;;
-  agent)
-    export WORKER_ID="\${1:-\$(hostname)}"
-    bash "\$SCRIPS_DIR/agent.sh" run "\$WORKER_ID"
-    ;;
-  demo)
-    echo "=== Démo beaut ==="
-    state_init
-    bash "\$SCRIPS_DIR/wg_setup.sh" &
-    sleep 1
-    bash "\$SCRIPS_DIR/http_server.sh" &
-    SRV_PID=\$!
-    sleep 2
-    echo "Serveur lancé (PID \$SRV_PID)"
-    echo
-    echo "Pour installer un agent sur un autre nœud :"
-    echo "  curl http://\$DOMAIN:\$HTTP_PORT/install | sh"
-    echo
-    echo "Pour soumettre une tâche :"
-    echo "  beaut.sh submit 'echo hello-world'"
-    echo
-    echo "Pour voir les stats :"
-    echo "  beaut.sh status"
-    echo
-    kill \$SRV_PID 2>/dev/null
-    ;;
-  init) state_init ;;
-  status|list) curl -s "\$DOMAIN:\$HTTP_PORT/stats" ;;
-  submit)
-    command="\$*"
-    [[ -n "\$command" ]] || { echo "usage: beaut.sh submit <commande>" >&2; exit 2; }
-    local_stats="\$(curl -s "\$DOMAIN:\$HTTP_PORT/stats")"
-    echo "ressources: \$local_stats"
-    tid="\$(uid)"
-    tsv_append "\$STATE_DIR/tasks.tsv" "\$tid" "client-local" "\$command" "pending" "\$(date +%s)"
-    echo "tâche soumise: \$tid"
-    ;;
-  *)
-    echo "usage: beaut.sh {server|agent|demo|init|status|list|submit} [args...]"
-    exit 2
-    ;;
-esac
-BEAUT_SCRIPT
-  chmod +x "$target"
-  log info "beaut.sh installé dans $target"
-}
-
-cmd_demo() {
-  cmd_install
-  cmd_init
-
-  # Nettoie d'éventuels serveurs précédents
-  pkill -f 'scripts/http_server.sh' 2>/dev/null || true
-  pkill -f 'socat TCP-LISTEN' 2>/dev/null || true
-  fuser -k "$HTTP_PORT"/tcp 2>/dev/null || true
-  sleep 1
-
-  # Pour la démo locale, on force DOMAIN=127.0.0.1
-  export DOMAIN=127.0.0.1
-
-  # Lance le serveur en arrière-plan
-  log info "lancement du serveur en arrière-plan"
-  bash "$SCRIPTS_DIR/wg_setup.sh" > "$STATE_DIR/wg.log" 2>&1 &
-  sleep 1
-  bash "$SCRIPTS_DIR/http_server.sh" > "$STATE_DIR/http.log" 2>&1 &
-  SRV_PID=$!
-  for ((i=0; i<30; i++)); do
-    if ss -tlnp | grep -q ":$HTTP_PORT "; then
-      break
-    fi
-    sleep 0.5
-  done
-  sleep 1
-
-  echo "=== Serveur démarré (PID $SRV_PID) ==="
-  echo "URL: http://$DOMAIN:$HTTP_PORT"
-  echo
-
-  # Lance un agent local avec intervalle court pour la démo
-  log info "lancement d'un agent local"
-  export WORKER_ID="demo-worker"
-  export HEARTBEAT_INTERVAL=1
-  bash "$SCRIPTS_DIR/agent.sh" run "demo-worker" > "$STATE_DIR/agent.log" 2>&1 &
-  AGENT_PID=$!
-  sleep 3
-
-  # Crée un exemple docker-compose hello-world
-  DEMO_DIR="$STATE_DIR/demo"
-  mkdir -p "$DEMO_DIR"
-  cat > "$DEMO_DIR/docker-compose.yml" <<'COMPOSE'
-version: '3'
-services:
-  hello:
-    image: alpine:latest
-    command: echo "Hello World from Docker Compose via beaut!"
-COMPOSE
-
-  # Soumet une tâche : lancer le docker-compose
-  TASK_CMD="cd $DEMO_DIR && docker-compose up 2>/dev/null || echo 'docker-compose non disponible, exécution simple' && echo hello-beaut-demo"
-  log info "soumission de la tâche : $TASK_CMD"
-  TASK_ID=$(client_submit "$TASK_CMD" 2>/dev/null | tail -1)
-  echo "task_id=$TASK_ID"
-
-  sleep 8
-
-  echo "=== Statut ==="
-  client_status "$TASK_ID"
-  echo
-  echo "=== Résultat ==="
-  client_result "$TASK_ID"
-  echo
-
-  # Arrêt
-  kill "$AGENT_PID" "$SRV_PID" 2>/dev/null
-  wait 2>/dev/null
-  log info "démo terminée"
-}
-
-cmd_status() { curl -s "http://$DOMAIN:$HTTP_PORT/stats"; }
-cmd_list() { cmd_status; }
-
-cmd="${1:-}"; shift || true
-case "$cmd" in
-  server) cmd_server ;;
-  agent)  cmd_agent "$@" ;;
-  install) cmd_install ;;
-  demo)   cmd_demo ;;
-  init)   cmd_init ;;
-  status) cmd_status ;;
-  list)   cmd_list ;;
-  *)      usage; exit 2 ;;
-esac
+# --- 6. Instructions pour les agents ---
+echo "[6/6] Instructions pour les agents"
+echo "Sur chaque nœud invité, exécuter (en tant qu'utilisateur non-root) :"
+echo "  curl http://$DOMAIN:$HTTP_PORT/install | sh"
+echo "Puis rejoindre le WireGuard avec la clé publique ci-dessus."
+echo
+echo "=== Installation terminée ==="
