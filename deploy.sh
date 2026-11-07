@@ -139,10 +139,14 @@ start_service() {
 
 wait_for_server() {
   local attempt
-  for attempt in 1 2 3 4 5; do
-    curl -fsS "http://$SERVER_HOST:$HTTP_PORT/work" >/dev/null 2>&1 && return 0
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if curl -fsS "http://$SERVER_HOST:$HTTP_PORT/work" >/dev/null 2>&1; then
+      return 0
+    fi
     sleep 1
   done
+  log error "server unreachable on http://$SERVER_HOST:$HTTP_PORT (~/.beaut/state/http.log, journal: systemctl --user -u beaut.service)"
+  as_service_user 'systemctl --user status beaut.service --no-pager -l 2>&1; journalctl --user -u beaut.service -n 40 --no-pager 2>&1' >/dev/null 2>&1 || true
   return 1
 }
 

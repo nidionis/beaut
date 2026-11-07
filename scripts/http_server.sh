@@ -13,4 +13,4 @@ state_init
 
 log info "HTTP server on $SERVER_HOST:$HTTP_PORT (script/token server, no execution)"
 
-socat TCP-LISTEN:"$HTTP_PORT",fork EXEC:"bash $SCRIPT_DIR/http_handler.sh" 2>/dev/null
+socat TCP-LISTEN:"$HTTP_PORT",fork EXEC:"bash $SCRIPT_DIR/http_handler.sh"

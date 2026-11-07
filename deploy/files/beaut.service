@@ -1,5 +1,5 @@
 [Unit]
-Description=beaut — serveur de scripts et de tokens
+Description=beaut — script server and token service
 After=network-online.target
 
 [Service]
