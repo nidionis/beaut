@@ -44,7 +44,7 @@ copy_to_service_user() { scp -i "$SSH_PRIVATE_KEY" "${SSH_OPTIONS[@]}" "$@"; }
 
 # --- 1. bootstrap through BOOTSTRAP_USER ------------------------------------
 bootstrap_remote() {
-  local public_key_b64 privilege_prefix remote_uid remote_payload
+  local public_key_b64 assignments remote_payload
   [[ -f "$SSH_PRIVATE_KEY" ]]     || die "private key not found: $SSH_PRIVATE_KEY"
   [[ -f "$SSH_PRIVATE_KEY.pub" ]] || die "public key not found: $SSH_PRIVATE_KEY.pub"
 
@@ -56,20 +56,18 @@ bootstrap_remote() {
   scp "$LOCAL_PAYLOAD" "$BOOTSTRAP_USER@$SERVER_HOST:$remote_payload" \
     || die "cannot upload bootstrap payload (BOOTSTRAP_USER=$BOOTSTRAP_USER)"
 
-  remote_uid="$(ssh "$BOOTSTRAP_USER@$SERVER_HOST" 'id -u')" \
-    || die "cannot connect to $BOOTSTRAP_USER@$SERVER_HOST"
-  remote_uid="${remote_uid//[[:space:]]/}"
-  if [[ "$remote_uid" == "0" ]]; then
-    privilege_prefix=""
-  else
-    ssh "$BOOTSTRAP_USER@$SERVER_HOST" 'sudo -n true' >/dev/null 2>&1 \
-      || die "$BOOTSTRAP_USER needs passwordless sudo: use BOOTSTRAP_USER=root"
-    privilege_prefix="sudo -n env"
-  fi
+  assignments="SERVICE_USER=$(printf '%q' "$SERVICE_USER") PUBLIC_KEY_B64=$public_key_b64 PAYLOAD_ARCHIVE=$(printf '%q' "$remote_payload") SERVER_HOST=$(printf '%q' "$SERVER_HOST") HTTP_PORT=$(printf '%q' "$HTTP_PORT") WG_PORT=$(printf '%q' "$WG_PORT") WG_NETWORK=$(printf '%q' "$WG_NETWORK") WG_SERVER_IP=$(printf '%q' "$WG_SERVER_IP") TOKEN_TTL_SECONDS=$(printf '%q' "$TOKEN_TTL_SECONDS")"
 
-  ssh "$BOOTSTRAP_USER@$SERVER_HOST" \
-    "$privilege_prefix SERVICE_USER=$(printf '%q' "$SERVICE_USER") PUBLIC_KEY_B64=$public_key_b64 PAYLOAD_ARCHIVE=$(printf '%q' "$remote_payload") SERVER_HOST=$(printf '%q' "$SERVER_HOST") HTTP_PORT=$(printf '%q' "$HTTP_PORT") WG_PORT=$(printf '%q' "$WG_PORT") WG_NETWORK=$(printf '%q' "$WG_NETWORK") WG_SERVER_IP=$(printf '%q' "$WG_SERVER_IP") TOKEN_TTL_SECONDS=$(printf '%q' "$TOKEN_TTL_SECONDS") bash -s" \
-    < "$FILES_DIR/bootstrap.sh" || die "bootstrap failed on $SERVER_HOST"
+  # One SSH call: pick root or passwordless sudo, then feed bootstrap.sh on stdin.
+  ssh "$BOOTSTRAP_USER@$SERVER_HOST" "
+    if [ \"\$(id -u)\" -eq 0 ]; then
+      exec env $assignments bash -s
+    elif sudo -n true 2>/dev/null; then
+      exec sudo -n env $assignments bash -s
+    else
+      echo 'error: $BOOTSTRAP_USER needs passwordless sudo: use BOOTSTRAP_USER=root' >&2
+      exit 1
+    fi" < "$FILES_DIR/bootstrap.sh" || die "bootstrap failed on $SERVER_HOST"
 
   rm -f -- "$LOCAL_PAYLOAD"; LOCAL_PAYLOAD=""
 }

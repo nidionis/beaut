@@ -34,14 +34,18 @@ cleanup_payload() {
 }
 trap cleanup_payload EXIT
 
-# 1. service user (created if missing), home standardized
-if id -u "$SERVICE_USER" >/dev/null 2>&1; then
-  home_dir="$(getent passwd "$SERVICE_USER" | cut -d: -f6)"
-else
+# 1. service user (created if missing), login shell and home standardized.
+#    An account may already exist with /usr/sbin/nologin: key auth would succeed
+#    but every session would die with "This account is currently not available."
+if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
   useradd -m -s /bin/bash "$SERVICE_USER"
-  home_dir="$(getent passwd "$SERVICE_USER" | cut -d: -f6)"
 fi
+home_dir="$(getent passwd "$SERVICE_USER" | cut -d: -f6)"
+login_shell="$(getent passwd "$SERVICE_USER" | cut -d: -f7)"
 [[ -n "$home_dir" ]] || die "home directory not found for $SERVICE_USER"
+if [[ "$login_shell" != "/bin/bash" ]]; then
+  usermod -s /bin/bash "$SERVICE_USER"
+fi
 primary_group="$(id -gn "$SERVICE_USER")"
 
 if [[ "$home_dir" != "$TARGET_HOME" ]]; then
