@@ -8,10 +8,11 @@ config.env
 *.swp
 *.tmp
 .ssh/
-tags
+
+# external project reference (do not commit)
+boinc/
 
 # personal environment checkout, exposed through the `.svr` symlink
-# (no trailing slash: it is a symlink, not a directory)
 .svr
 
 # macOS / editors

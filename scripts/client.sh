@@ -1,29 +1,50 @@
 #!/usr/bin/env bash
 # client.sh — client donneur de tâches.
-# Sous-commandes : submit status result list
+# Requêtes dynamiques : interroge /stats puis envoie une commande via /give.
 set -uo pipefail
 
-SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPTS_DIR/.." && pwd)"
-. "$SCRIPTS_DIR/lib/core.sh"
+HDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$HDIR/lib/core.sh"
 load_config "$@"
 
-cmd="${1:-}"; shift || true
+client_submit() {
+  local command="$*"
+  [[ -n "$command" ]] || { echo "usage: client_submit <commande>" >&2; exit 2; }
 
-case "$cmd" in
-  submit)
-    command="$*"; [[ -n "$command" ]] || { echo "usage: client.sh submit <commande>" >&2; exit 2; }
-    ssh_hub submit client-local "$command" ;;
-  status)
-    tid="$1"; [[ -n "$tid" ]] || { echo "usage: client.sh status <task_id>" >&2; exit 2; }
-    tline=$(awk -F'\t' -v t="$tid" '$1==t{print; exit}' "$STATE_DIR/tasks.tsv" 2>/dev/null)
-    if [[ -z "$tline" ]]; then echo "inconnue"; else
-      awk -F'\t' -v t="$tid" '$1==t{print "tâche " $1 " — statut " $4}' "$STATE_DIR/tasks.tsv"
-    fi ;;
-  result)
-    tid="$1"; [[ -n "$tid" ]] || { echo "usage: client.sh result <task_id>" >&2; exit 2; }
-    if [[ -f "$STATE_DIR/results/$tid" ]]; then cat "$STATE_DIR/results/$tid";
-    else echo "aucun résultat pour $tid" >&2; exit 1; fi ;;
-  list) ssh_hub list ;;
-  *) echo "usage: client.sh {submit|status|result|list} ..." >&2; exit 2 ;;
-esac
+  # 1. Demande les ressources disponibles
+  local stats
+  stats="$(curl -s "http://127.0.0.1:$HTTP_PORT/stats")"
+  log info "ressources serveur: $stats"
+
+  # 2. Soumet la tâche via /give (enregistrement d'une tâche pending)
+  local tid; tid="$(uid)"
+  tsv_append "$STATE_DIR/tasks.tsv" "$tid" "client-local" "$command" "pending" "$(date +%s)"
+  echo "$tid"
+}
+
+client_status() {
+  local tid="$1"; [[ -n "$tid" ]] || { echo "usage: client_status <task_id>" >&2; exit 2; }
+  local line; line="$(tsv_find "$STATE_DIR/tasks.tsv" 1 "$tid")"
+  if [[ -z "$line" ]]; then echo "inconnue"; else
+    tsv_field "$line" 4
+  fi
+}
+
+client_result() {
+  local tid="$1"; [[ -n "$tid" ]] || { echo "usage: client_result <task_id>" >&2; exit 2; }
+  if [[ -f "$STATE_DIR/results/$tid" ]]; then cat "$STATE_DIR/results/$tid";
+  else echo "aucun résultat pour $tid" >&2; exit 1; fi
+}
+
+client_list() { curl -s "http://127.0.0.1:$HTTP_PORT/stats"; }
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  cmd="${1:-}"; shift || true
+  case "$cmd" in
+    submit) client_submit "$@" ;;
+    status) client_status "$1" ;;
+    result) client_result "$1" ;;
+    list) client_list ;;
+    *) echo "usage: client.sh {submit|status|result|list} ..." >&2; exit 2 ;;
+  esac
+fi
