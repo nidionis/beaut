@@ -19,7 +19,8 @@ NO_ROOT=0
 . "$DEPLOY_DIR/config.env" 2>/dev/null || . "$DEPLOY_DIR/config.env.example"
 [[ -f "$DEPLOY_DIR/.env" ]] && . "$DEPLOY_DIR/.env"
 export NAME DIR STATE_DIR DOMAIN HTTP_PORT WG_PORT WG_NET WG_SERVER_IP \
-  TOKEN_TTL_SECONDS LOG_LEVEL HTTP_FILE_ROOT ERR404 HIST_MEM_MAX_RATIO
+  TOKEN_TTL_SECONDS LOG_LEVEL HTTP_FILE_ROOT ERR404 HIST_MEM_MAX_RATIO \
+  SUDOER
 
 . "$SCRIPTS_DIR/lib/core.sh"
 
@@ -35,33 +36,33 @@ remote_install() {
   cmd_exists ssh || { log error "ssh requis pour l'installation distante"; exit 2; }
   cmd_exists scp || { log error "scp requis pour l'installation distante"; exit 2; }
 
-  log info "Installation distante sur $DOMAIN (utilisateur $NAME)"
+  log info "Installation distante sur $DOMAIN (utilisateur $SUDOER)"
 
-  # 1. Creer l'utilisateur sudoer $NAME (si absent)
-  ssh "$DOMAIN" "sudo id -u $NAME >/dev/null 2>&1 || (sudo useradd -m -s /bin/bash $NAME && sudo usermod -aG sudo $NAME && echo '$NAME ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/$NAME)" \
+  # 1. Creer l'utilisateur sudoer $NAME (si absent) via $SUDOER
+  ssh "${SUDOER}@$DOMAIN" "sudo id -u $NAME >/dev/null 2>&1 || (sudo useradd -m -s /bin/bash $NAME && sudo usermod -aG sudo $NAME && echo '$NAME ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/$NAME)" \
     || { log error "impossible de creer l'utilisateur $NAME sur $DOMAIN"; exit 2; }
 
-  # 2. Autoriser la cle d'installation (et clefs optionnelles)
+  # 2. Autoriser la cle d'installation (et clefs optionnelles) pour $NAME
   local auth_keys="$HOME/.ssh/id_ed25519.pub"
   [[ -f "$auth_keys" ]] || auth_keys="$HOME/.ssh/id_rsa.pub"
   if [[ -f "$auth_keys" ]]; then
-    ssh "$DOMAIN" "sudo -u $NAME bash -c 'mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'" < "$auth_keys"
+    ssh "${SUDOER}@$DOMAIN" "sudo -u $NAME bash -c 'mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'" < "$auth_keys"
     log info "cle d'installation autorisee pour $NAME sur $DOMAIN"
   fi
 
-  # 3. Copier les scripts et la config
-  ssh "$DOMAIN" "sudo -u $NAME bash -c 'mkdir -p ~/beaut/scripts ~/beaut/deploy/files ~/beaut/state'" \
+  # 3. Copier les scripts et la config vers $NAME
+  ssh "${SUDOER}@$DOMAIN" "sudo -u $NAME bash -c 'mkdir -p ~/beaut/scripts ~/beaut/deploy/files ~/beaut/state'" \
     || { log error "impossible de creer l'arborescence sur $DOMAIN"; exit 2; }
-  scp -r "$SCRIPTS_DIR"/* "$DOMAIN:~/beaut/scripts/"
-  scp "$DEPLOY_DIR/config.env" "$DOMAIN:~/beaut/"
-  scp "$FILES_DIR/start.sh" "$DOMAIN:~/beaut/deploy/files/start.sh"
-  ssh "$DOMAIN" "sudo -u $NAME bash -c 'chmod +x ~/beaut/scripts/*.sh ~/beaut/scripts/lib/*.sh ~/beaut/deploy/files/start.sh'"
+  scp -r "$SCRIPTS_DIR"/* "${SUDOER}@$DOMAIN:~/beaut/scripts/"
+  scp "$DEPLOY_DIR/config.env" "${SUDOER}@$DOMAIN:~/beaut/"
+  scp "$FILES_DIR/start.sh" "${SUDOER}@$DOMAIN:~/beaut/deploy/files/start.sh"
+  ssh "${SUDOER}@$DOMAIN" "sudo -u $NAME bash -c 'chmod +x ~/beaut/scripts/*.sh ~/beaut/scripts/lib/*.sh ~/beaut/deploy/files/start.sh'"
 
   # 4. Git : depot de déploiement
-  ssh "$DOMAIN" "sudo -u $NAME bash -c 'cd ~/beaut && git init -q 2>/dev/null; git add -A; git commit -q -m \"deploy: installation initiale\" 2>/dev/null || true'"
+  ssh "${SUDOER}@$DOMAIN" "sudo -u $NAME bash -c 'cd ~/beaut && git init -q 2>/dev/null; git add -A; git commit -q -m \"deploy: installation initiale\" 2>/dev/null || true'"
 
   # 5. WireGuard + lancement serveur
-  ssh "$DOMAIN" "sudo -u $NAME bash -c 'cd ~/beaut && export DOMAIN=$DOMAIN HTTP_PORT=$HTTP_PORT WG_PORT=$WG_PORT WG_NET=$WG_NET WG_SERVER_IP=$WG_SERVER_IP TOKEN_TTL_SECONDS=$TOKEN_TTL_SECONDS && bash scripts/wg_setup.sh && nohup bash scripts/http_server.sh > ~/beaut/state/http.log 2>&1 &'"
+  ssh "${SUDOER}@$DOMAIN" "sudo -u $NAME bash -c 'cd ~/beaut && export DOMAIN=$DOMAIN HTTP_PORT=$HTTP_PORT WG_PORT=$WG_PORT WG_NET=$WG_NET WG_SERVER_IP=$WG_SERVER_IP TOKEN_TTL_SECONDS=$TOKEN_TTL_SECONDS && bash scripts/wg_setup.sh && nohup bash scripts/http_server.sh > ~/beaut/state/http.log 2>&1 &'"
 
   log info "Installation terminee sur $DOMAIN"
   log info "Serveur de scripts : http://$DOMAIN:$HTTP_PORT"

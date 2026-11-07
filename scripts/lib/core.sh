@@ -18,6 +18,7 @@ load_config() {
   [[ -f "$ROOT_DIR/.env" ]] && { set -a; . "$ROOT_DIR/.env"; set +a; }
 
   NAME="${NAME:-beaut}"
+  SUDOER="${SUDOER:-root}"
   DIR="${DIR:-$HOME/.$NAME}"
   STATE_DIR="${STATE_DIR:-$DIR/state}"
   DOMAIN="${DOMAIN:-192.168.8.240}"
@@ -32,7 +33,8 @@ load_config() {
   HIST_MEM_MAX_RATIO="${HIST_MEM_MAX_RATIO:-5}"
 
   export NAME DIR STATE_DIR DOMAIN HTTP_PORT WG_PORT WG_NET WG_SERVER_IP \
-    TOKEN_TTL_SECONDS LOG_LEVEL HTTP_FILE_ROOT ERR404 HIST_MEM_MAX_RATIO
+    TOKEN_TTL_SECONDS LOG_LEVEL HTTP_FILE_ROOT ERR404 HIST_MEM_MAX_RATIO \
+    SUDOER
 }
 
 log() {
