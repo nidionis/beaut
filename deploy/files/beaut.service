@@ -1,0 +1,13 @@
+[Unit]
+Description=beaut — serveur de scripts et de tokens
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.beaut
+ExecStart=%h/.beaut/deploy/files/start.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

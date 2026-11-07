@@ -23,7 +23,7 @@ Plateforme de calcul partagé minimaliste. Le serveur ne calcule jamais : il **s
 | `/work/<token>` | GET | Renvoie la commande/dataset associée au token (si valide et non expiré) |
 | `/done/<token>` | POST | Le node POSTe son résultat ; le token lie travail et résultat |
 | `/get` | POST | Requête dataset sur mesure (corps `cle=val&cle=val`) ; privilèges vérifiés via token |
-| `/<fichier>` | GET | Lecture seule depuis `HTTP_FILE_ROOT` (dossier → `DEFAULT.sh`) |
+| `/<chemin>` | GET | Arborescence `HTTP_FILE_ROOT` (dossier → premier `DEFAU*.sh`) |
 | autre | GET | `ERR404` (variable configurable) |
 
 ## Parsing
@@ -36,21 +36,30 @@ Aucune bibliothèque de parsing HTTP/AWK. On lit uniquement :
 - Archivage journalier sous `state/archive/YYYY-MM-DD/`.
 - `HIST_MEM_MAX = 20% de la RAM totale` : garde-fou désactivant l'archivage si la mémoire disponible est trop faible.
 
-## Déploiement (`deploy.sh`)
-- Connexion **SSH/SFTP** sur l'ordinateur `$DOMAIN`.
-- Crée l'utilisateur sudoer `$NAME=beaut`.
-- Autorise la clé d'installation (+ clés optionnelles depuis `config.env`).
+## Déploiement (`deploy.sh`) — deux temps, une bascule d'identité
+1. **`$SUDOER`** (root conseillé, demandé au lancement) applique `deploy/files/amorce.sh` :
+   crée `$NAME=beaut` (home standard `$HOME`, pas de `NAME_HOME`), autorise la clé
+   publique, installe la **copie root:root** des scripts et le helper `s$NAME`.
+2. Tout le reste se fait en **`$NAME`**, par clé uniquement (`BatchMode`, `publickey`),
+   sans mot de passe, dans `$HOME/.beaut` : `scripts/`, `deploy/`, `state/`, `shared/`.
+- `sudo` n'est accordé que pour les ressources spéciales : une seule règle
+  `NOPASSWD` vers `/usr/local/sbin/s$NAME` (réseau/WireGuard). Le helper n'exécute
+  que la copie root, jamais le code modifiable par `$NAME`.
 - WireGuard sécurise les connexions entre clés reconnues.
-- À l'issue : un serveur de scripts de déploiement est joignable à l'adresse principale + ses alias/DDNS.
+- Serveur lancé en service utilisateur systemd (`deploy/files/beaut.service`), secours `setsid`.
+- À l'issue : le serveur est joignable, `curl /node | sh` récupère le script node.
 - Mise à jour et synchronisation des scripts par **git** (`git pull`).
 
 ## Fichiers clés
 ```
 config.env              variables d'environnement (éditables à la main)
-deploy.sh               installation distante SSH/SFTP
+deploy.sh               amorçage distant SSH/SFTP (SUDOER puis NAME)
+deploy/files/amorce.sh  première application en root : utilisateur, clé, sudo limité
+deploy/files/sbeaut     helper root des ressources spéciales (installé en s$NAME)
+deploy/files/beaut.service  service utilisateur systemd
 deploy/files/start.sh   script de démarrage (fichier à part, jamais inline)
 scripts/http_server.sh  lance socat + http_handler.sh
-scripts/http_handler.sh handler serveur (routes, pas d'exécution)
+scripts/http_handler.sh handler serveur (routes + arborescence, pas d'exécution)
 scripts/http_exec.sh    script node (| sh), réclame + exécute + rapporte
 scripts/net.sh          WireGuard + pare-feu (source unique)
 scripts/wg_setup.sh     délègue à net.sh
@@ -58,4 +67,5 @@ scripts/wg_join.sh      délègue à net.sh
 scripts/lib/core.sh     config, log, état
 scripts/lib/state.sh    TSV unique (find/append/update)
 state/db.tsv            base d'état (tokens, travaux, résultats)
+shared/                 arborescence HTTP servie (path = fichier, dossier = DEFAU*.sh)
 ```

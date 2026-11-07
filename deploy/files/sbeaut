@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# sbeaut — ressources spéciales (réseau) accordées à $NAME via sudo limité.
+# Installé root:root en /usr/local/sbin/s<NAME>. Ne lit QUE la copie root des
+# scripts (/usr/local/lib/beaut), jamais l'arborescence modifiable de l'utilisateur.
+set -euo pipefail
+
+RACINE=/usr/local/lib/beaut
+
+case "${1:-tout}" in
+  tout|"") bash "$RACINE/scripts/wg_setup.sh" ;;
+  *)       bash "$RACINE/scripts/net.sh" "$@" ;;
+esac
