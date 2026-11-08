@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bootstrap.sh — first application on the remote host, run as root through
 # BOOTSTRAP_USER. Creates SERVICE_USER, its SSH key, its tree, the root-owned
-# copy of the scripts, and the scoped sudo helper s$SERVICE_USER.
+# copy of the scripts, and the passwordless sudo grant for SERVICE_USER.
 # Nothing else: the rest of the deployment runs as SERVICE_USER.
 set -euo pipefail
 export LC_ALL=C
@@ -74,7 +74,7 @@ done
 chmod 700 "$home_dir/.beaut/state"
 
 # 4. root-owned copy of the scripts + frozen network config. Never writable by
-#    SERVICE_USER: sudo over user-writable code would be a privilege escalation.
+#    the service user: it runs through the sudo grant below.
 WORK_DIR="$(mktemp -d)"
 tar xzf "$PAYLOAD_ARCHIVE" -C "$WORK_DIR"
 install -d -m 755 -o root -g root "$ROOT_LIB_DIR"
@@ -86,9 +86,9 @@ chown -R root:root "$ROOT_LIB_DIR"
 chmod -R go-w "$ROOT_LIB_DIR"
 find "$ROOT_LIB_DIR/scripts" -type f -name '*.sh' -exec chmod 755 {} +
 
-# 5. s$SERVICE_USER helper (root:root) + sudo limited to that single command
-install -m 755 -o root -g root "$WORK_DIR/deploy/files/sbeaut" "$SBIN_DIR/s$SERVICE_USER"
-printf '%s ALL=(root) NOPASSWD: %s/s%s\n' "$SERVICE_USER" "$SBIN_DIR" "$SERVICE_USER" > "/etc/sudoers.d/$SERVICE_USER"
+# 5. sudo grant for the service user (full, passwordless; validated with visudo)
+install -d -m 755 /etc/sudoers.d
+printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$SERVICE_USER" > "/etc/sudoers.d/$SERVICE_USER"
 chmod 440 "/etc/sudoers.d/$SERVICE_USER"
 if command -v visudo >/dev/null 2>&1; then
   visudo -cf "/etc/sudoers.d/$SERVICE_USER" >/dev/null
@@ -99,4 +99,4 @@ if command -v loginctl >/dev/null 2>&1; then
   loginctl enable-linger "$SERVICE_USER" 2>/dev/null || true
 fi
 
-note "done: $SERVICE_USER (home $home_dir, sudo NOPASSWD $SBIN_DIR/s$SERVICE_USER)"
+note "done: $SERVICE_USER (home $home_dir, sudo NOPASSWD /etc/sudoers.d/$SERVICE_USER)"

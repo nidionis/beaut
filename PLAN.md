@@ -43,14 +43,16 @@ Aucune bibliothèque de parsing HTTP. On lit uniquement :
    `deploy/files/bootstrap.sh` : crée `SERVICE_USER=beaut`, autorise la clé
    publique, installe la **copie root:root** des scripts, écrit la config racine
    depuis `config.env.example` + les 3 overrides (`SERVICE_ROOT`, `STATE_DIR`,
-   `PUBLISHED_ROOT`), installe le helper `s$SERVICE_USER`.
+   `PUBLISHED_ROOT`), accorde le sudo passwordless à `SERVICE_USER`.
 2. Tout le reste se fait en **`SERVICE_USER`**, par clé uniquement (`BatchMode`,
    `publickey`), sans mot de passe, dans `$HOME/.beaut` : `scripts/`, `deploy/`,
    `state/`, `shared/`. Le démarrage du service est piloté par
    `deploy/files/remote_install.sh` (exécuté via `remote_run`).
-- `sudo` n'est accordé que pour les ressources spéciales : une seule règle
-  `NOPASSWD` vers `/usr/local/sbin/s$SERVICE_USER` (réseau/WireGuard). Le helper
-  n'exécute que la copie root, jamais le code modifiable par `SERVICE_USER`.
+
+- `sudo` passwordless est accordé à `SERVICE_USER` via `/etc/sudoers.d/<SERVICE_USER>`
+  (règle `ALL=(ALL) NOPASSWD: ALL`, validée avec `visudo`) : l'accès réseau/WireGuard
+  passe par la copie root.
+- `--no-root` : mode utilisateur, sans sudo, sans WireGuard.
 - WireGuard sécurise les connexions entre clés reconnues.
 - Serveur lancé en service utilisateur systemd (`deploy/files/beaut.service`),
   secours `setsid` (fallback via `remote_install.sh`).
@@ -67,10 +69,9 @@ automatiquement** : aucune liste d'export à maintenir.
 ```
 config.env                  variables d'environnement (éditables à la main)
 config.env.example          modèle + schéma de repli
-deploy.sh                   orchestrateur client SSH/SFTP (BOOTSTRAP_USER puis SERVICE_USER)
-deploy/files/bootstrap.sh   première application en root : utilisateur, clé, config racine, sudo limité
+deploy.sh                   orchestrateur client SSH/SFTP (BOOTSTRAP_USER puis SERVICE_USER ; --no-root = user)
+deploy/files/bootstrap.sh   première application en root : utilisateur, clé, config racine, sudo grant
 deploy/files/remote_install.sh   phase utilisateur : service systemd + demarrage du serveur
-deploy/files/sbeaut         helper root des ressources spéciales (installé en s$SERVICE_USER)
 deploy/files/beaut.service  service utilisateur systemd
 deploy/files/start.sh       script de démarrage (fichier à part, jamais inline)
 scripts/http_server.sh      chaine de listeners : socat → relay C → fail

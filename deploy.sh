@@ -1,23 +1,37 @@
 #!/usr/bin/env bash
-# deploy.sh — bootstrap beaut on $SERVER_HOST.
+# deploy.sh — deploy the minimal beaut server on $SERVER_HOST.
 #
-#   ./deploy.sh              remote installation (SSH/SFTP)
-#   ./deploy.sh --no-root    local installation, no system privileges
+#   ./deploy.sh              remote installation (SSH/SFTP) on $SERVER_HOST
+#   ./deploy.sh --no-root    remote installation as SERVICE_USER, without sudo
+#   ./deploy.sh --debug      verbose remote diagnostics
 #
-# Two phases, one identity switch:
-#   1. BOOTSTRAP_USER (root recommended) applies deploy/files/bootstrap.sh:
-#      creates SERVICE_USER, authorizes the key, installs the root-owned script
-#      copy and the s$SERVICE_USER helper.
-#   2. everything else runs as SERVICE_USER (private key, no password), inside
-#      $HOME/.beaut: scripts, deploy, state, shared (the HTTP tree).
+# Install modes:
+#   privileged (default): BOOTSTRAP_USER (root recommended) applies
+#     deploy/files/bootstrap.sh: creates SERVICE_USER, authorizes its key,
+#     installs the root-owned copy, writes the sudo grant, starts the service.
+#     WireGuard is configured through the sudo grant.
+#   user (--no-root): connect as SERVICE_USER with the key only, install under
+#     $HOME/.beaut and start the service without any sudo; no WireGuard.
+#
+# Then, everything else runs as SERVICE_USER (private key, no password), inside
+# $HOME/.beaut: scripts/, deploy/, state/, shared/ (the HTTP tree).
 set -euo pipefail
 
 DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$DEPLOY_DIR/scripts/lib/core.sh"
 load_config
 
-LOCAL_MODE=0
-if [[ "${1:-}" == "--no-root" ]]; then LOCAL_MODE=1; fi
+DEBUG="${DEBUG:-0}"
+
+INSTALL_MODE="root"
+if [[ "${1:-}" == "--no-root" ]]; then
+  INSTALL_MODE="user"
+  shift
+fi
+if [[ "${1:-}" == "--debug" ]]; then
+  DEBUG=1
+  shift
+fi
 
 CONFIG_FILE="$PROJECT_ROOT/config.env"
 [[ -f "$CONFIG_FILE" ]] || CONFIG_FILE="$PROJECT_ROOT/config.env.example"
@@ -37,11 +51,14 @@ choose_bootstrap_user() {
 }
 
 # --- connection as SERVICE_USER (key only, never a password) ----------------
-SSH_OPTIONS=(-o BatchMode=yes -o IdentitiesOnly=yes
-             -o PreferredAuthentications=publickey -o StrictHostKeyChecking=accept-new)
-as_service_user() { ssh -n -i "$SSH_PRIVATE_KEY" "${SSH_OPTIONS[@]}" "$SERVICE_USER@$SERVER_HOST" "$@"; }
-copy_to_service_user() { scp -i "$SSH_PRIVATE_KEY" "${SSH_OPTIONS[@]}" "$@"; }
-remote_run() { ssh -n -i "$SSH_PRIVATE_KEY" "${SSH_OPTIONS[@]}" "$SERVICE_USER@$SERVER_HOST" 'bash -s' < "$1"; }
+SSH_BASE=(-o BatchMode=yes -o IdentitiesOnly=yes
+          -o PreferredAuthentications=publickey -o StrictHostKeyChecking=accept-new)
+if [[ "$DEBUG" -eq 1 ]]; then
+  SSH_BASE+=(-o LogLevel=DEBUG3)
+fi
+as_service_user() { ssh -n -i "$SSH_PRIVATE_KEY" "${SSH_BASE[@]}" "$SERVICE_USER@$SERVER_HOST" "$@"; }
+copy_to_service_user() { scp -i "$SSH_PRIVATE_KEY" "${SSH_BASE[@]}" "$@"; }
+remote_run() { ssh -n -i "$SSH_PRIVATE_KEY" "${SSH_BASE[@]}" "$SERVICE_USER@$SERVER_HOST" 'bash -s' < "$1"; }
 
 # --- 1. bootstrap through BOOTSTRAP_USER ------------------------------------
 bootstrap_remote() {
@@ -57,7 +74,7 @@ bootstrap_remote() {
   scp "$LOCAL_PAYLOAD" "$BOOTSTRAP_USER@$SERVER_HOST:$remote_payload" \
     || die "cannot upload bootstrap payload (BOOTSTRAP_USER=$BOOTSTRAP_USER)"
 
-  assignments="SERVICE_USER=$(printf '%q' "$SERVICE_USER") PUBLIC_KEY_B64=$public_key_b64 PAYLOAD_ARCHIVE=$(printf '%q' "$remote_payload") SERVER_HOST=$(printf '%q' "$SERVER_HOST") HTTP_PORT=$(printf '%q' "$HTTP_PORT") WG_PORT=$(printf '%q' "$WG_PORT") WG_NETWORK=$(printf '%q' "$WG_NETWORK") WG_SERVER_IP=$(printf '%q' "$WG_SERVER_IP") TOKEN_TTL_SECONDS=$(printf '%q' "$TOKEN_TTL_SECONDS")"
+  assignments="SERVICE_USER=$(printf %q "$SERVICE_USER") PUBLIC_KEY_B64=$public_key_b64 PAYLOAD_ARCHIVE=$(printf %q "$remote_payload)")"
 
   # One SSH call: pick root or passwordless sudo, then feed bootstrap.sh on stdin.
   ssh "$BOOTSTRAP_USER@$SERVER_HOST" "
@@ -84,7 +101,7 @@ upload_tree() {
     || die "cannot copy scripts"
   copy_to_service_user "$CONFIG_FILE" "$SERVICE_USER@$SERVER_HOST:.beaut/config.env" \
     || die "cannot copy configuration"
-  as_service_user "find ~/.beaut -type f \( -name '*.sh' -o -name 'sbeaut' \) -exec chmod 755 {} +" \
+  as_service_user "find ~/.beaut -type f -name '*.sh' -exec chmod 755 {} +" \
     || die "remote chmod failed"
 }
 
@@ -112,10 +129,10 @@ publish_tree() {
     chmod -R a+rX shared' || die "cannot publish the HTTP tree"
 }
 
-# --- 5. privileged resources through the scoped helper ----------------------
+# --- 5. privileged resources through the sudo grant -------------------------
 configure_network() {
   as_service_user "if command -v wg >/dev/null 2>&1; then
-            sudo -n s$SERVICE_USER || echo 'warning: network not configured' >&2
+            sudo -n bash /usr/local/lib/beaut/scripts/network.sh setup || echo 'warning: network not configured' >&2
           else
             echo 'warning: wireguard missing, network skipped' >&2
           fi" || true
@@ -134,21 +151,32 @@ wait_for_server() {
   return 1
 }
 
-install_remote() {
+install_server() {
   has_command ssh  || die "ssh is required"
   has_command scp  || die "scp is required"
   has_command curl || die "curl is required"
 
-  choose_bootstrap_user
-  log info "bootstrapping $SERVER_HOST through $BOOTSTRAP_USER, then $SERVICE_USER"
-  bootstrap_remote
-  verify_key_auth
-  log info "key accepted for $SERVICE_USER@$SERVER_HOST"
+  if [[ "$INSTALL_MODE" == "root" ]]; then
+    choose_bootstrap_user
+    log info "bootstrapping $SERVER_HOST through $BOOTSTRAP_USER, then $SERVICE_USER"
+    bootstrap_remote
+    verify_key_auth
+    log info "key accepted for $SERVICE_USER@$SERVER_HOST"
+  else
+    log info "no-root mode: installing $SERVER_HOST as $SERVICE_USER without sudo"
+    verify_key_auth
+  fi
 
   upload_tree
   init_git_repo
   publish_tree
-  configure_network
+
+  if [[ "$INSTALL_MODE" == "root" ]]; then
+    configure_network
+  else
+    log info "no-root mode: skipping network/WireGuard configuration (no sudo)"
+  fi
+
   remote_run "$FILES_DIR/remote_install.sh"
 
   if wait_for_server; then
@@ -156,26 +184,10 @@ install_remote() {
     log info "node: curl -fsS http://$SERVER_HOST:$HTTP_PORT/node | sh"
   else
     log error "server unreachable on http://$SERVER_HOST:$HTTP_PORT (~/.beaut/state/http.log)"
+    as_service_user 'systemctl --user status beaut.service --no-pager -l 2>&1; journalctl --user -u beaut.service -n 40 --no-pager 2>&1' >/dev/null 2>&1 || true
     exit 1
   fi
   log info "installation complete on $SERVER_HOST (user $SERVICE_USER)"
 }
 
-# --- local mode -------------------------------------------------------------
-install_local() {
-  local target="${SERVICE_ROOT:-$HOME/.$SERVICE_USER}"
-  mkdir -p "$target/state" "$target/shared" "$target/deploy"
-  cp -a "$SCRIPTS_DIR" "$target/"
-  cp -a "$FILES_DIR" "$target/deploy/"
-  cp -f "$CONFIG_FILE" "$target/config.env"
-  find "$target/scripts" -type f -name '*.sh' -exec chmod 755 {} +
-  chmod 755 "$target/deploy/files/start.sh"
-  echo "=== local installation complete in $target ==="
-  echo "start: bash $target/deploy/files/start.sh"
-}
-
-if [[ $LOCAL_MODE -eq 1 ]]; then
-  install_local
-else
-  install_remote
-fi
+install_server
