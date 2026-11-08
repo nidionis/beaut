@@ -74,7 +74,7 @@ bootstrap_remote() {
   scp "$LOCAL_PAYLOAD" "$BOOTSTRAP_USER@$SERVER_HOST:$remote_payload" \
     || die "cannot upload bootstrap payload (BOOTSTRAP_USER=$BOOTSTRAP_USER)"
 
-  assignments="SERVICE_USER=$(printf %q "$SERVICE_USER") PUBLIC_KEY_B64=$public_key_b64 PAYLOAD_ARCHIVE=$(printf %q "$remote_payload)")"
+  assignments="SERVICE_USER=$SERVICE_USER PUBLIC_KEY_B64=$public_key_b64 PAYLOAD_ARCHIVE=$remote_payload"
 
   # One SSH call: pick root or passwordless sudo, then feed bootstrap.sh on stdin.
   ssh "$BOOTSTRAP_USER@$SERVER_HOST" "
