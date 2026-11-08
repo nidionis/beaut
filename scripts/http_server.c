@@ -6,6 +6,8 @@
  */
 #define _GNU_SOURCE
 #include <arpa/inet.h>
+#include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +21,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "usage: %s <port> <handler>\n", argv[0]);
     return 2;
   }
+  signal(SIGCHLD, SIG_IGN);
   int port = atoi(argv[1]);
   const char *handler = argv[2];
 

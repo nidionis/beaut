@@ -106,25 +106,6 @@ chown -R root:root "$ROOT_LIB_DIR"
 chmod -R go-w "$ROOT_LIB_DIR"
 find "$ROOT_LIB_DIR/scripts" -type f -name '*.sh' -exec chmod 755 {} +
 
-# 4.5 runtime dependency: the HTTP listener. The root phase installs it.
-install_http_listener() {
-  command -v socat >/dev/null 2>&1 && return 0
-  local ok=1
-  if command -v apt-get >/dev/null 2>&1; then
-    apt-get update -qq >/dev/null 2>&1 || true
-    apt-get install -y -qq socat >/dev/null 2>&1 || ok=1
-  elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y -q socat >/dev/null 2>&1 || ok=1
-  elif command -v yum >/dev/null 2>&1; then
-    yum install -y -q socat >/dev/null 2>&1 || ok=1
-  elif command -v apk >/dev/null 2>&1; then
-    apk add -q socat >/dev/null 2>&1 || ok=1
-  fi
-  command -v socat >/dev/null 2>&1 || ok=1
-  return "$ok"
-}
-install_http_listener || die "HTTP listener dependency (socat) is missing"
-
 # 5. s$SERVICE_USER helper (root:root) + sudo limited to that single command
 install -m 755 -o root -g root "$WORK_DIR/deploy/files/sbeaut" "$SBIN_DIR/s$SERVICE_USER"
 printf '%s ALL=(root) NOPASSWD: %s/s%s\n' "$SERVICE_USER" "$SBIN_DIR" "$SERVICE_USER" > "/etc/sudoers.d/$SERVICE_USER"

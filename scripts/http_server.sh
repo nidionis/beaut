@@ -16,12 +16,10 @@ start_with_socat() {
 
 start_with_c() {
   has_command gcc || return 1
-  local binary
-  binary="${HOME}/.cache/beaut/http-server"
+  local binary="${HOME}/.cache/beaut/http-server"
   mkdir -p -- "${HOME}/.cache/beaut"
-  if ! gcc -o "$binary" "$SCRIPT_DIR/http_server.c"; then
-    rm -f -- "$binary"
-    return 1
+  if [[ ! -x "$binary" || "$SCRIPT_DIR/http_server.c" -nt "$binary" ]]; then
+    gcc -o "$binary" "$SCRIPT_DIR/http_server.c" || { rm -f -- "$binary"; return 1; }
   fi
   exec "$binary" "$HTTP_PORT" "$SCRIPT_DIR/http_handler.sh"
 }
