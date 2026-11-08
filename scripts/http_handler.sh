@@ -97,8 +97,15 @@ case "$url_path" in
     else
       task_command="$(token_field "$token" 3)"
       token_status="$(token_field "$token" 4)"
+      token_created_at="$(token_field "$token" 5)"
       if [[ "$token_status" == "pending" || "$token_status" == "" ]]; then
-        http_send_response 200 "$task_command"
+        now_seconds="$(date +%s)"
+        if (( now_seconds - token_created_at > TOKEN_TTL_SECONDS )); then
+          state_update "$STATE_DIR/db.tsv" 4 "expired" 2 "$token"
+          http_send_response 410 "token expired or already used ($token_status)"
+        else
+          http_send_response 200 "$task_command"
+        fi
       else
         http_send_response 410 "token expired or already used ($token_status)"
       fi

@@ -11,9 +11,9 @@ Plateforme de calcul partagé minimaliste. Le serveur ne calcule jamais : il **s
 - Créé à chaque requête de travail (`GET /work`).
 - Identifie de façon unique une tâche proposée à un node.
 - Le node doit utiliser ce token pour rendre son résultat (`POST /done/<token>`).
-- Le serveur détruit le token après `TOKEN_TTL_SECONDS` (pas de route `/burn`).
-- Si le travail est rendu dans les temps, le token reste archivé un temps comme preuve de travail prototypique, valorisable ultérieurement en privilèges (plus un node a travaillé, plus il peut utiliser de ressources).
-- Le réseau est supposé privé ; la vérification croisée par un node différent est favorisée mais non imposée.
+- Le serveur détruit le token après `TOKEN_TTL_SECONDS`.
+- Si le travail est rendu dans les temps, le token reste archivé un temps comme preuve de travail prototypique, valorisable ultérieurement en privilèges (plus un node a travaillé, plus il peut utiliser de ressources mais laisser ce concept virtuel).
+- Le réseau est supposé privé ; la vérification croisée par un node différent est non imposée mais possible en cas de doute grace a l'archivage ou une verification aleatoire (randomnumber of 1 \ VERIF_RATIO ex:controle only 1 result of 3 results sample).
 
 ## Routes HTTP (serveur)
 
@@ -34,7 +34,7 @@ Aucune bibliothèque de parsing HTTP. On lit uniquement :
 
 ## Données (TSV unique)
 - `state/db.tsv` : une seule table avec colonne `type` (token, task, result, archive).
-- Archivage journalier sous `state/archive/YYYY-MM-DD/`.
+- Archivage toute les heures sous `state/archive/YYYY-MM-DD/`.
 - `ARCHIVE_MEMORY_DIVISOR` : l'archivage est ignoré si la RAM disponible est
   inférieure ou égale à la RAM totale divisée par ce diviseur (défaut 5, soit 20%).
 
