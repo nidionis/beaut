@@ -52,7 +52,7 @@ bootstrap_remote() {
   public_key_b64="$(base64 -w0 < "$SSH_PRIVATE_KEY.pub")"
   remote_payload="/tmp/beaut-bootstrap.$$.tgz"
   LOCAL_PAYLOAD="$(mktemp "${TMPDIR:-/tmp}/beaut.XXXXXX.tgz")"
-  tar -czf "$LOCAL_PAYLOAD" -C "$PROJECT_ROOT" scripts deploy
+  tar -czf "$LOCAL_PAYLOAD" -C "$PROJECT_ROOT" scripts deploy config.env.example
 
   scp "$LOCAL_PAYLOAD" "$BOOTSTRAP_USER@$SERVER_HOST:$remote_payload" \
     || die "cannot upload bootstrap payload (BOOTSTRAP_USER=$BOOTSTRAP_USER)"

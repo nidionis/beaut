@@ -9,12 +9,6 @@ export LC_ALL=C
 : "${SERVICE_USER:?missing SERVICE_USER}"
 : "${PUBLIC_KEY_B64:?missing PUBLIC_KEY_B64}"
 : "${PAYLOAD_ARCHIVE:=/tmp/beaut-bootstrap.tgz}"
-: "${SERVER_HOST:=192.168.8.240}"
-: "${HTTP_PORT:=8080}"
-: "${WG_PORT:=51820}"
-: "${WG_NETWORK:=10.66.0.0/24}"
-: "${WG_SERVER_IP:=10.66.0.1}"
-: "${TOKEN_TTL_SECONDS:=300}"
 
 ROOT_LIB_DIR=/usr/local/lib/beaut
 SBIN_DIR=/usr/local/sbin
@@ -86,22 +80,8 @@ tar xzf "$PAYLOAD_ARCHIVE" -C "$WORK_DIR"
 install -d -m 755 -o root -g root "$ROOT_LIB_DIR"
 rm -rf -- "$ROOT_LIB_DIR/scripts"
 cp -a "$WORK_DIR/scripts" "$ROOT_LIB_DIR/scripts"
-cat > "$ROOT_LIB_DIR/config.env" <<EOF
-SERVICE_USER=$SERVICE_USER
-BOOTSTRAP_USER=root
-SERVICE_ROOT=/var/lib/beaut
-STATE_DIR=/var/lib/beaut/state
-PUBLISHED_ROOT=/var/lib/beaut/shared
-SERVER_HOST=$SERVER_HOST
-HTTP_PORT=$HTTP_PORT
-WG_PORT=$WG_PORT
-WG_NETWORK=$WG_NETWORK
-WG_SERVER_IP=$WG_SERVER_IP
-TOKEN_TTL_SECONDS=$TOKEN_TTL_SECONDS
-LOG_LEVEL=info
-NOT_FOUND_BODY=404
-ARCHIVE_MEMORY_DIVISOR=5
-EOF
+cat "$WORK_DIR/config.env.example" > "$ROOT_LIB_DIR/config.env"
+printf 'SERVICE_ROOT=/var/lib/beaut\nSTATE_DIR=/var/lib/beaut/state\nPUBLISHED_ROOT=/var/lib/beaut/shared\n' >> "$ROOT_LIB_DIR/config.env"
 chown -R root:root "$ROOT_LIB_DIR"
 chmod -R go-w "$ROOT_LIB_DIR"
 find "$ROOT_LIB_DIR/scripts" -type f -name '*.sh' -exec chmod 755 {} +

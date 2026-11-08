@@ -40,18 +40,22 @@ Aucune bibliothèque de parsing HTTP. On lit uniquement :
 
 ## Déploiement (`deploy.sh`) — deux temps, une bascule d'identité
 1. **`BOOTSTRAP_USER`** (root conseillé, demandé au lancement) applique
-   `deploy/files/bootstrap.sh` : crée `SERVICE_USER=beaut` (home standard
-   `$HOME`), autorise la clé publique, installe la **copie root:root** des
-   scripts et le helper `s$SERVICE_USER`.
+   `deploy/files/bootstrap.sh` : crée `SERVICE_USER=beaut`, autorise la clé
+   publique, installe la **copie root:root** des scripts, écrit la config racine
+   depuis `config.env.example` + les 3 overrides (`SERVICE_ROOT`, `STATE_DIR`,
+   `PUBLISHED_ROOT`), installe le helper `s$SERVICE_USER`.
 2. Tout le reste se fait en **`SERVICE_USER`**, par clé uniquement (`BatchMode`,
    `publickey`), sans mot de passe, dans `$HOME/.beaut` : `scripts/`, `deploy/`,
-   `state/`, `shared/`.
+   `state/`, `shared/`. Le démarrage du service est piloté par
+   `deploy/files/remote_install.sh` (exécuté via `remote_run`).
 - `sudo` n'est accordé que pour les ressources spéciales : une seule règle
   `NOPASSWD` vers `/usr/local/sbin/s$SERVICE_USER` (réseau/WireGuard). Le helper
   n'exécute que la copie root, jamais le code modifiable par `SERVICE_USER`.
 - WireGuard sécurise les connexions entre clés reconnues.
-- Serveur lancé en service utilisateur systemd (`deploy/files/beaut.service`), secours `setsid`.
-- À l'issue : le serveur est joignable, `curl /node | sh` récupère le script node.
+- Serveur lancé en service utilisateur systemd (`deploy/files/beaut.service`),
+  secours `setsid` (fallback via `remote_install.sh`).
+- À l'issue : le serveur est joignable via le listener `socat` ou le relay C
+  compilé (`scripts/http_server.c`), `curl /node | sh` récupère le script node.
 - Mise à jour et synchronisation des scripts par **git** (`git pull`).
 
 ## Configuration
@@ -63,19 +67,20 @@ automatiquement** : aucune liste d'export à maintenir.
 ```
 config.env                  variables d'environnement (éditables à la main)
 config.env.example          modèle + schéma de repli
-deploy.sh                   amorçage distant SSH/SFTP (BOOTSTRAP_USER puis SERVICE_USER)
-deploy/files/bootstrap.sh   première application en root : utilisateur, clé, sudo limité
+deploy.sh                   orchestrateur client SSH/SFTP (BOOTSTRAP_USER puis SERVICE_USER)
+deploy/files/bootstrap.sh   première application en root : utilisateur, clé, config racine, sudo limité
+deploy/files/remote_install.sh   phase utilisateur : service systemd + demarrage du serveur
 deploy/files/sbeaut         helper root des ressources spéciales (installé en s$SERVICE_USER)
 deploy/files/beaut.service  service utilisateur systemd
 deploy/files/start.sh       script de démarrage (fichier à part, jamais inline)
-scripts/http_server.sh      lance socat + http_handler.sh
+scripts/http_server.sh      chaine de listeners : socat → relay C → fail
+scripts/http_server.c       relay TCP minimal (socat-enough, gcc)
 scripts/http_handler.sh     handler serveur (routes + arborescence, pas d'exécution)
+scripts/lib/http.sh         réponses HTTP, parsing, form, client http_request
+scripts/lib/state.sh        TSV unique + helpers token_create/token_find/token_field
 scripts/node.sh             script node (| sh), réclame + exécute + rapporte
 scripts/network.sh          WireGuard + pare-feu (source unique)
-scripts/wireguard_setup.sh  délègue à network.sh
-scripts/wireguard_join.sh   délègue à network.sh
 scripts/lib/core.sh         chemins, config, log, état
-scripts/lib/state.sh        TSV unique (state_find/state_append/state_update)
 state/db.tsv                base d'état (tokens, travaux, résultats)
 shared/                     arborescence HTTP servie (path = fichier, dossier = DEFAU*.sh)
 ```
