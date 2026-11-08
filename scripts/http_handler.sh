@@ -16,74 +16,11 @@ export LC_ALL=C
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib/core.sh"
+. "$SCRIPT_DIR/lib/http.sh"
 load_config
 
 STATE_DB="$STATE_DIR/db.tsv"
 state_init
-
-# --- HTTP responses ---------------------------------------------------------
-reason_phrase() {
-  case "$1" in
-    200) printf 'OK' ;;
-    400) printf 'Bad Request' ;;
-    403) printf 'Forbidden' ;;
-    404) printf 'Not Found' ;;
-    410) printf 'Gone' ;;
-    *)   printf 'OK' ;;
-  esac
-}
-
-send_response() {
-  local status_code="$1" response_body="${2:-}"
-  printf 'HTTP/1.1 %s %s\r\nContent-Length: %s\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n%s' \
-    "$status_code" "$(reason_phrase "$status_code")" "${#response_body}" "$response_body"
-}
-
-send_file() {
-  local file_path="$1" file_size
-  file_size="$(wc -c < "$file_path")"
-  printf 'HTTP/1.1 200 OK\r\nContent-Length: %s\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n' "$file_size"
-  cat -- "$file_path"
-}
-
-# --- request parsing --------------------------------------------------------
-# 1. request line: METHOD /path HTTP/1.1
-IFS= read -r -t 5 request_line || exit 0
-request_line="${request_line%$'\r'}"
-http_method="${request_line%% *}"
-url_path="${request_line#* }"; url_path="${url_path%% *}"
-url_path="${url_path#/}"; url_path="${url_path%%\?*}"
-
-# 2. headers up to the blank line (only Content-Length is kept)
-content_length=""
-while IFS= read -r -t 5 header; do
-  header="${header%$'\r'}"
-  [[ -z "$header" ]] && break
-  case "${header,,}" in
-    content-length:*) content_length="${header#*:}"; content_length="${content_length//[[:space:]]/}" ;;
-  esac
-done
-
-# 3. raw body for POST only (never a blocking cat on GET)
-request_body=""
-if [[ "${http_method^^}" == "POST" ]]; then
-  if [[ "$content_length" =~ ^[0-9]+$ ]]; then
-    IFS= read -r -N "$content_length" request_body || true
-  else
-    request_body="$(cat)" || true
-  fi
-fi
-
-# --- form parameter extraction (key=value&key=value) ------------------------
-get_form_param() {
-  local key="$1"
-  printf '%s' "$request_body" | awk -F'[&?]' -v k="$key" '{
-    for (i=1;i<=NF;i++) {
-      split($i,a,"=")
-      if (a[1]==k) { print a[2]; exit }
-    }
-  }'
-}
 
 # --- daily archive of a result ----------------------------------------------
 archive_result() {
@@ -104,7 +41,7 @@ archive_result() {
   local timestamp; timestamp="$(date +%s)"
   local node_name; node_name="$(hostname 2>/dev/null || echo unknown)"
   printf 'archive\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$day" "$token" "$node_name" "$result" "$timestamp" "" "" >> "$STATE_DB"
-  printf '%s\t%s\t%s\t%s\n' "$token" "$node_name" "$result" "$timestamp" >> "$archive_dir/results.tsv"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$token" "$node_name" "$result" "$timestamp" >> "$archive_dir/results.tsv"
 }
 
 # --- static tree ------------------------------------------------------------
@@ -120,80 +57,76 @@ serve_tree() {
   local requested_path="$1" root_dir real_root target
   root_dir="${PUBLISHED_ROOT:-}"
   if [[ -z "$root_dir" || ! -d "$root_dir" ]]; then
-    send_response 404 "${NOT_FOUND_BODY:-404}"; return
+    http_send_response 404 "${NOT_FOUND_BODY:-404}"; return
   fi
   real_root="$(realpath -m -- "$root_dir" 2>/dev/null || printf '%s' "$root_dir")"
 
   case "$requested_path" in
-    *..*|*\\*) send_response 404 "${NOT_FOUND_BODY:-404}"; return ;;
+    *..*|*\\*) http_send_response 404 "${NOT_FOUND_BODY:-404}"; return ;;
   esac
 
   target="$(realpath -m -- "$root_dir/$requested_path" 2>/dev/null || true)"
   if [[ -z "$target" || ( "$target" != "$real_root" && "$target" != "$real_root"/* ) ]]; then
-    send_response 404 "${NOT_FOUND_BODY:-404}"; return
+    http_send_response 404 "${NOT_FOUND_BODY:-404}"; return
   fi
 
   if [[ -d "$target" ]]; then
     target="$(find_default_script "$target")" \
-      || { send_response 404 "${NOT_FOUND_BODY:-404}"; return; }
+      || { http_send_response 404 "${NOT_FOUND_BODY:-404}"; return; }
   fi
 
   if [[ -f "$target" ]]; then
-    send_file "$target"
+    http_send_file "$target"
   else
-    send_response 404 "${NOT_FOUND_BODY:-404}"
+    http_send_response 404 "${NOT_FOUND_BODY:-404}"
   fi
 }
 
 # --- routing ----------------------------------------------------------------
+http_parse_request
+[[ -n "${http_method:-}" ]] || exit 0
 case "$url_path" in
   work)
-    token="$(new_id | tr -d '.')"
-    timestamp="$(date +%s)"
-    printf 'token\t%s\techo hello-world\tpending\t%s\t\t\t\n' "$token" "$timestamp" >> "$STATE_DB"
-    send_response 200 "$token"
+    token="$(token_create 'echo hello-world' 'pending' "$(date +%s)")"
+    http_send_response 200 "$token"
     ;;
   work/*)
     token="${url_path#work/}"
-    token_row="$(state_find "$STATE_DB" 2 "$token")"
-    if [[ -z "$token_row" ]]; then
-      send_response 404 "${NOT_FOUND_BODY:-404}"
+    if [[ -z "$(token_find "$token")" ]]; then
+      http_send_response 404 "${NOT_FOUND_BODY:-404}"
     else
-      row_type="$(printf '%s' "$token_row" | cut -f1)"
-      token_status="$(printf '%s' "$token_row" | cut -f4)"
-      task_command="$(printf '%s' "$token_row" | cut -f3)"
-      if [[ "$row_type" != "token" ]]; then
-        send_response 404 "${NOT_FOUND_BODY:-404}"
-      elif [[ "$token_status" == "pending" || "$token_status" == "" ]]; then
-        send_response 200 "$task_command"
+      task_command="$(token_field "$token" 3)"
+      token_status="$(token_field "$token" 4)"
+      if [[ "$token_status" == "pending" || "$token_status" == "" ]]; then
+        http_send_response 200 "$task_command"
       else
-        send_response 410 "token expired or already used ($token_status)"
+        http_send_response 410 "token expired or already used ($token_status)"
       fi
     fi
     ;;
   done/*)
     token="${url_path#done/}"
     if [[ -z "$token" ]]; then
-      send_response 400 "missing token"
-    elif [[ -z "$(state_find "$STATE_DB" 2 "$token")" ]]; then
-      send_response 404 "${NOT_FOUND_BODY:-404}"
+      http_send_response 400 "missing token"
+    elif [[ -z "$(token_find "$token")" ]]; then
+      http_send_response 404 "${NOT_FOUND_BODY:-404}"
     else
       archive_result "$token" "$request_body"
-      state_update "$STATE_DB" 4 "done" 2 "$token" 2>/dev/null || true
-      send_response 200 "confirmed: $token"
+      state_update "$STATE_DIR/db.tsv" 4 "done" 2 "$token"
+      http_send_response 200 "confirmed: $token"
     fi
     ;;
   get)
-    request_token="$(get_form_param token)"
-    dataset="$(get_form_param dataset)"
+    request_token="$(http_get_form_param token)"
+    dataset="$(http_get_form_param dataset)"
     if [[ -z "$request_token" ]]; then
-      send_response 400 "missing token"
+      http_send_response 400 "missing token"
     elif [[ -z "$dataset" ]]; then
-      send_response 400 "missing dataset"
-    elif [[ -z "$(state_find "$STATE_DB" 2 "$request_token")" ]]; then
-      send_response 403 "unknown token"
+      http_send_response 400 "missing dataset"
+    elif [[ -z "$(token_find "$request_token")" ]]; then
+      http_send_response 403 "unknown token"
     else
-      send_response 200 "dataset $dataset granted to token $request_token"
+      http_send_response 200 "dataset $dataset granted to token $request_token"
     fi
     ;;
   *)

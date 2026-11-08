@@ -33,3 +33,20 @@ state_update() {
     'BEGIN{OFS="\t"} $mc==mv{$sc=sv} {print}' "$file" > "$tmp"
   mv "$tmp" "$file"
 }
+
+token_create() {
+  local command="$1" status="$2" created_at="$3"
+  local token
+  token="$(new_id | tr -d '.')"
+  printf 'token\t%s\t%s\t%s\t%s\t\t\t\n' "$token" "$command" "$status" "$created_at" >> "$STATE_DIR/db.tsv"
+  printf '%s' "$token"
+}
+
+token_find() {
+  awk -F'\t' -v t="token" -v v="$1" '$1==t && $2==v { print; exit }' "$STATE_DIR/db.tsv"
+}
+
+token_field() {
+  local token="$1" column="$2"
+  printf '%s' "$(state_find "$STATE_DIR/db.tsv" 2 "$token")" | cut -d $'\t' -f "$column"
+}
