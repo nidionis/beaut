@@ -116,17 +116,30 @@ init_git_repo() {
 }
 
 # --- 4. HTTP tree: the path mirrors the file --------------------------------
+# /node is published as a self-contained artifact: server address baked in and
+# no sourced files, so `curl .../node | sh` works with zero client files.
+# /join is not published; scripts/wireguard_join.sh stays a repo command.
 publish_tree() {
+  local published_node_artifact
+  published_node_artifact="$(mktemp "${TMPDIR:-/tmp}/beaut-node.XXXXXX")"
+  bash "$SCRIPTS_DIR/build_published_node.sh" "$SERVER_HOST" "$HTTP_PORT" > "$published_node_artifact" \
+    || die "cannot build the published node script"
+
   as_service_user 'set -e
     cd ~/.beaut
-    mkdir -p shared
-    rm -rf shared/scripts shared/deploy
+    mkdir -p shared/node
+    rm -rf shared/scripts shared/deploy shared/join
     cp -a scripts shared/scripts
     cp -a deploy shared/deploy
-    mkdir -p shared/node
-    cp -f scripts/node.sh shared/node/DEFAULT.sh
-    cp -f scripts/wireguard_join.sh shared/join
     chmod -R a+rX shared' || die "cannot publish the HTTP tree"
+
+  copy_to_service_user "$published_node_artifact" \
+    "$SERVICE_USER@$SERVER_HOST:.beaut/shared/node/DEFAULT.sh" \
+    || die "cannot upload the published node script"
+  as_service_user 'chmod a+rX ~/.beaut/shared/node ~/.beaut/shared/node/DEFAULT.sh' \
+    || die "cannot make the published node script readable"
+
+  rm -f -- "$published_node_artifact"
 }
 
 # --- 5. privileged resources through the sudo grant -------------------------

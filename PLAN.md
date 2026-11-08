@@ -53,12 +53,42 @@ Aucune bibliothèque de parsing HTTP. On lit uniquement :
   (règle `ALL=(ALL) NOPASSWD: ALL`, validée avec `visudo`) : l'accès réseau/WireGuard
   passe par la copie root.
 - `--no-root` : mode utilisateur, sans sudo, sans WireGuard.
-- WireGuard sécurise les connexions entre clés reconnues.
+- WireGuard est **idempotent** (`scripts/lib/wireguard.sh`) : clés réutilisées,
+  interface `wg0` conservée si déjà configurée, chaînes `nft`/`iptables`
+  reconstruites vers un seul jeu de règles. La clé publique du serveur reste
+  stable entre déploiements.
+- Publication : `shared/node/DEFAULT.sh` est généré avec `SERVER_HOST` et
+  `HTTP_PORT` figés et **aucun fichier sourcé**, en `sh` POSIX. `/join` n'est
+  plus publié ; `scripts/wireguard_join.sh` reste une commande du dépôt.
 - Serveur lancé en service utilisateur systemd (`deploy/files/beaut.service`),
   secours `setsid` (fallback via `remote_install.sh`).
 - À l'issue : le serveur est joignable via le listener `socat` ou le relay C
-  compilé (`scripts/http_server.c`), `curl /node | sh` récupère le script node.
+  compilé (`scripts/http_server.c`), `curl /node | sh` fonctionne sans fichier
+  client.
 - Mise à jour et synchronisation des scripts par **git** (`git pull`).
+
+## Attribution virtuelle (secrets / chemins)
+
+`scripts/attribution.sh` est une fonction générique et réutilisable, indépendante
+de WireGuard : elle associe un **chemin virtuel** aléatoire à une ressource
+(secret, clé, service, requête, dataset, ...). Le chemin n'existe jamais sur
+disque ; seul le registre (`state/attributions/registry.tsv`) porte la
+correspondance. Le chemin est une phrase de dictionnaire + suffixe hexadécimal.
+
+- `create`, `ensure` (réutilise l'identité `kind/name`), `resolve`, `rotate`,
+  `remove`, `list`.
+- Paramètres : `ATTRIBUTION_DIRECTORY`, `ATTRIBUTION_REGISTRY`,
+  `ATTRIBUTION_WORD_COUNT`, `ATTRIBUTION_SECRET_BYTES`,
+  `ATTRIBUTION_PATH_NAMESPACE`, `ATTRIBUTION_DICTIONARY`.
+
+## Tests
+
+Sous-projet `tests/` : `tests/run.sh`. Aucun root, aucun réseau externe, aucun
+WireGuard réel. Chaque test lance le relay C sur `127.0.0.1` avec un état
+temporaire et couvre : cycle de vie des tokens, TTL, arborescence statique, 404,
+traversée, `curl /node | sh` depuis un dossier vide, `/join` non publié,
+attributions virtuelles, réutilisation des clés WireGuard et idempotence du
+pare-feu (commandes factices), `bash -n` / `gcc -fsyntax-only` / `git diff --check`.
 
 ## Configuration
 Tout est défini dans `config.env` et `config.env.example` (le modèle sert aussi
@@ -79,9 +109,14 @@ scripts/http_server.c       relay TCP minimal (socat-enough, gcc)
 scripts/http_handler.sh     handler serveur (routes + arborescence, pas d'exécution)
 scripts/lib/http.sh         réponses HTTP, parsing, form, client http_request
 scripts/lib/state.sh        TSV unique + helpers token_create/token_find/token_field
-scripts/node.sh             script node (| sh), réclame + exécute + rapporte
-scripts/network.sh          WireGuard + pare-feu (source unique)
+scripts/node.sh             script node POSIX autonome (| sh), réclame + exécute + rapporte
+scripts/build_published_node.sh  génère /node avec l'adresse figée, sans source
+scripts/network.sh          wrapper WireGuard + pare-feu
+scripts/lib/wireguard.sh    helpers WireGuard/pare-feu idempotents
+scripts/attribution.sh      CLI d'attribution virtuelle (secrets/chemins)
+scripts/lib/virtual_path.sh algorithme passphrase/chemin/registre
 scripts/lib/core.sh         chemins, config, log, état
+tests/                      sous-projet de tests isolé (tests/run.sh)
 state/db.tsv                base d'état (tokens, travaux, résultats)
 shared/                     arborescence HTTP servie (path = fichier, dossier = DEFAU*.sh)
 ```

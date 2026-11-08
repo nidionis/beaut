@@ -1,0 +1,45 @@
+# beaut tests
+
+A self-contained test subproject. It needs **no root, no WireGuard, and no
+external network**: every server runs on `127.0.0.1` with temporary state.
+
+## Run
+
+```bash
+tests/run.sh                 # every test
+tests/run.sh --verbose       # show passing logs too
+tests/run.sh --filter handler
+tests/run.sh --list
+```
+
+A single test can also run directly:
+
+```bash
+bash tests/handler_test.sh
+```
+
+Dependencies: `bash`, `curl`, `gcc`, `mktemp`. `dash` is used as an extra POSIX
+syntax check when present. The compiled relay lives in `tests/.build/`
+(git-ignored), never in `/tmp`, because some systems mount `/tmp` `noexec`.
+
+## Layout
+
+| File | Coverage |
+|------|----------|
+| `lib/assert.sh` | assertions (`equal`, `contains`, `matches`, `status`, ...) |
+| `lib/server.sh` | compile and run the C relay on loopback, isolated roots |
+| `handler_test.sh` | token lifecycle, `/done`, `/get`, static tree, 404, traversal, TTL |
+| `served_node_test.sh` | `curl /node \| sh` from an empty directory, `/join` unpublished |
+| `virtual_path_test.sh` | create/ensure/resolve/rotate/remove, uniqueness, custom dictionary |
+| `network_test.sh` | WireGuard key reuse and idempotent firewall rules (fake commands) |
+| `syntax_test.sh` | `bash -n`, `gcc -fsyntax-only`, `git diff --check`, POSIX artifact |
+
+## Notes
+
+- Each test owns a `mktemp -d` sandbox and stops its server in `EXIT` trap.
+- `handler_test.sh` starts the C relay directly; the handler is the real
+  `scripts/http_handler.sh`, with `STATE_DIR` and `PUBLISHED_ROOT` overridden.
+- `network_test.sh` replaces `wg`, `ip` and `nft` with tiny fakes in a temporary
+  `PATH`, proving key reuse and rule idempotence without touching the host.
+- The suite deliberately does not test real WireGuard interfaces or real
+  firewall state; those stay manual checks on the target host.

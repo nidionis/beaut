@@ -1,0 +1,238 @@
+#!/usr/bin/env bash
+# lib/virtual_path.sh — flexible virtual secret/path attribution (sourced).
+#
+# A virtual path is random, human-readable, and never created on disk: the
+# registry maps it to a resource (a secret, a key, a service, a request, a
+# dataset, ...). Rotation replaces the secret without touching any file tree.
+# This is a generic utility: it knows nothing about WireGuard.
+#
+# Registry columns: kind | name | virtual_path | resource | secret | created_at
+set -uo pipefail
+
+ATTRIBUTION_BUILTIN_WORDS=(
+  amber anchor apple arrow basin beacon birch breeze bridge candle
+  canyon cedar cipher clover comet coral crimson dawn delta ember
+  falcon fern fjord flint forest fossil frost garnet glacier granite
+  harbor hazel heron hollow ivory jade juniper kettle lagoon lantern
+  larch lava lemon lilac linen maple marble meadow mint mirror
+  mist moss nectar nickel north oak oasis olive onyx orchid
+  pebble pine plume pond quartz quill rain raven reed ridge
+  river robin root saffron sage sand shade silver slate snow
+  solar spruce star steam stone storm summit thistle thunder tide
+  timber topaz tulip umber valley vapor velvet violet walnut wave
+  willow wind winter wolf zephyr
+)
+
+attribution_directory() {
+  printf '%s' "${ATTRIBUTION_DIRECTORY:-${STATE_DIR:?STATE_DIR is required}/attributions}"
+}
+
+attribution_registry_file() {
+  printf '%s' "${ATTRIBUTION_REGISTRY:-$(attribution_directory)/registry.tsv}"
+}
+
+attribution_registry_initialize() {
+  local directory registry
+  directory="$(attribution_directory)"
+  registry="$(attribution_registry_file)"
+  mkdir -p -- "$directory"
+  [[ -f "$registry" ]] || : > "$registry"
+  chmod 700 "$directory" 2>/dev/null || true
+  chmod 600 "$registry" 2>/dev/null || true
+}
+
+attribution_validate_field() {
+  local label="$1" value="$2"
+  case "$value" in
+    *$'\t'*|*$'\n'*)
+      printf 'invalid %s: tabs and newlines are not allowed\n' "$label" >&2
+      return 1
+      ;;
+  esac
+}
+
+attribution_words_load() {
+  local dictionary="${ATTRIBUTION_DICTIONARY:-}" word
+  local -A seen_words=()
+  ATTRIBUTION_WORDS=()
+  if [[ -n "$dictionary" && -r "$dictionary" ]]; then
+    while IFS= read -r word; do
+      word="${word//[[:space:]]/}"
+      [[ -n "$word" ]] || continue
+      [[ -n "${seen_words[$word]:-}" ]] && continue
+      seen_words[$word]=1
+      ATTRIBUTION_WORDS+=("$word")
+    done < "$dictionary"
+  fi
+  if (( ${#ATTRIBUTION_WORDS[@]} == 0 )); then
+    ATTRIBUTION_WORDS=("${ATTRIBUTION_BUILTIN_WORDS[@]}")
+  fi
+}
+
+attribution_random_integer() {
+  local upper_bound="${1:?missing upper bound}" value=""
+  if (( upper_bound <= 1 )); then
+    printf '0'
+    return 0
+  fi
+  if [[ -r /dev/urandom ]]; then
+    value="$(od -An -N4 -tu4 /dev/urandom 2>/dev/null | tr -d '[:space:]')"
+  fi
+  if [[ ! "${value:-}" =~ ^[0-9]+$ ]]; then
+    value="$RANDOM"
+  fi
+  printf '%s' "$(( value % upper_bound ))"
+}
+
+attribution_random_hex() {
+  local byte_count="${1:-24}" value=""
+  if [[ -r /dev/urandom ]]; then
+    value="$(od -An -N"$byte_count" -tx1 /dev/urandom 2>/dev/null | tr -d '[:space:]')"
+  fi
+  if [[ -z "${value:-}" ]]; then
+    value="$(printf '%04x%04x%04x%04x' "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM")"
+  fi
+  printf '%s' "$value"
+}
+
+attribution_generate_secret() {
+  local byte_count="${1:-${ATTRIBUTION_SECRET_BYTES:-24}}"
+  attribution_random_hex "$byte_count"
+}
+
+attribution_generate_passphrase() {
+  local word_count="${1:-${ATTRIBUTION_WORD_COUNT:-4}}" index word result=""
+  local -A used_words=()
+  attribution_words_load
+  local total_words=${#ATTRIBUTION_WORDS[@]}
+  (( total_words > 0 )) || {
+    printf 'no dictionary words available\n' >&2
+    return 1
+  }
+  (( word_count > total_words )) && word_count=$total_words
+  (( word_count > 0 )) || word_count=1
+  while (( ${#used_words[@]} < word_count )); do
+    index="$(attribution_random_integer "$total_words")"
+    word="${ATTRIBUTION_WORDS[$index]}"
+    [[ -n "${used_words[$word]:-}" ]] && continue
+    used_words[$word]=1
+    result="${result:+$result-}$word"
+  done
+  printf '%s' "$result"
+}
+
+attribution_generate_path() {
+  local namespace="${1:-${ATTRIBUTION_PATH_NAMESPACE:-v}}"
+  local word_count="${2:-${ATTRIBUTION_WORD_COUNT:-4}}"
+  local passphrase suffix
+  case "$namespace" in
+    ''|*[!A-Za-z0-9._-]*) namespace="v" ;;
+  esac
+  passphrase="$(attribution_generate_passphrase "$word_count")" || return 1
+  suffix="$(attribution_random_hex 3)"
+  printf '/%s/%s-%s' "$namespace" "$passphrase" "$suffix"
+}
+
+attribution_find_row() {
+  local virtual_path="${1:?missing virtual path}"
+  local registry
+  registry="$(attribution_registry_file)"
+  [[ -f "$registry" ]] || return 1
+  awk -F'\t' -v p="$virtual_path" '$3==p{print; exit}' "$registry"
+}
+
+attribution_find_row_by_identity() {
+  local kind="${1:?missing kind}" name="${2:?missing name}"
+  local registry
+  registry="$(attribution_registry_file)"
+  [[ -f "$registry" ]] || return 1
+  awk -F'\t' -v k="$kind" -v n="$name" '$1==k && $2==n{print; exit}' "$registry"
+}
+
+# Create a fresh attribution. Prints "virtual_path<TAB>secret".
+attribution_create() {
+  local kind="${1:?missing kind}" name="${2:?missing name}" resource="${3:?missing resource}"
+  local word_count="${4:-${ATTRIBUTION_WORD_COUNT:-4}}"
+  local virtual_path secret created_at registry
+  attribution_validate_field kind "$kind" || return 1
+  attribution_validate_field name "$name" || return 1
+  attribution_validate_field resource "$resource" || return 1
+
+  attribution_registry_initialize
+  if [[ -n "$(attribution_find_row_by_identity "$kind" "$name")" ]]; then
+    printf 'attribution already exists for %s/%s\n' "$kind" "$name" >&2
+    return 1
+  fi
+
+  registry="$(attribution_registry_file)"
+  virtual_path="$(attribution_generate_path "" "$word_count")" || return 1
+  while [[ -n "$(attribution_find_row "$virtual_path")" ]]; do
+    virtual_path="$(attribution_generate_path "" "$word_count")" || return 1
+  done
+  secret="$(attribution_generate_secret)"
+  created_at="$(date +%s)"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$kind" "$name" "$virtual_path" "$resource" "$secret" "$created_at" >> "$registry"
+  printf '%s\t%s\n' "$virtual_path" "$secret"
+}
+
+# Reuse the attribution for kind/name (creating it when absent), refreshing the
+# resource in place. Prints "virtual_path<TAB>secret".
+attribution_ensure() {
+  local kind="${1:?missing kind}" name="${2:?missing name}" resource="${3:?missing resource}"
+  local word_count="${4:-${ATTRIBUTION_WORD_COUNT:-4}}" existing registry tmp
+  attribution_validate_field kind "$kind" || return 1
+  attribution_validate_field name "$name" || return 1
+  attribution_validate_field resource "$resource" || return 1
+
+  attribution_registry_initialize
+  existing="$(attribution_find_row_by_identity "$kind" "$name")"
+  if [[ -n "$existing" ]]; then
+    registry="$(attribution_registry_file)"
+    if [[ "$(printf '%s' "$existing" | cut -f4)" != "$resource" ]]; then
+      tmp="$(mktemp)"
+      awk -F'\t' -v OFS='\t' -v k="$kind" -v n="$name" -v r="$resource" \
+        '$1==k && $2==n{$4=r} {print}' "$registry" > "$tmp"
+      mv "$tmp" "$registry"
+    fi
+    printf '%s\t%s\n' "$(printf '%s' "$existing" | cut -f3)" "$(printf '%s' "$existing" | cut -f5)"
+    return 0
+  fi
+  attribution_create "$kind" "$name" "$resource" "$word_count"
+}
+
+attribution_resolve() {
+  local row
+  row="$(attribution_find_row "${1:?missing virtual path}")" || return 1
+  [[ -n "$row" ]] || return 1
+  printf '%s' "$row" | cut -f4
+}
+
+# Replace the secret for a virtual path. Prints "virtual_path<TAB>secret".
+attribution_rotate() {
+  local virtual_path="${1:?missing virtual path}" secret registry tmp
+  [[ -n "$(attribution_find_row "$virtual_path")" ]] || return 1
+  secret="$(attribution_generate_secret)"
+  registry="$(attribution_registry_file)"
+  tmp="$(mktemp)"
+  awk -F'\t' -v OFS='\t' -v p="$virtual_path" -v s="$secret" \
+    '$3==p{$5=s} {print}' "$registry" > "$tmp"
+  mv "$tmp" "$registry"
+  printf '%s\t%s\n' "$virtual_path" "$secret"
+}
+
+attribution_remove() {
+  local virtual_path="${1:?missing virtual path}" registry tmp
+  [[ -n "$(attribution_find_row "$virtual_path")" ]] || return 1
+  registry="$(attribution_registry_file)"
+  tmp="$(mktemp)"
+  awk -F'\t' -v p="$virtual_path" '$3!=p{print}' "$registry" > "$tmp"
+  mv "$tmp" "$registry"
+}
+
+attribution_list() {
+  local registry
+  registry="$(attribution_registry_file)"
+  [[ -f "$registry" ]] || return 0
+  cat -- "$registry"
+}

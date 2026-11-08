@@ -8,6 +8,7 @@ config.env
 *.swp
 *.tmp
 .ssh/
+tests/.build/
 
 # external project reference (do not commit)
 boinc/

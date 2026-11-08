@@ -83,8 +83,54 @@ directory serves its first `DEFAU*.sh` (`/backdoors` →
 curl -fsS http://$SERVER_HOST:$HTTP_PORT/node | sh
 ```
 
-`scripts/node.sh` claims a token via the `lib/http.sh` client helpers, fetches the
-command, runs it locally and POSTs the result to `/done/<token>`.
+Works on a machine with **zero beaut files**. At publish time `deploy.sh` renders
+`shared/node/DEFAULT.sh` with `SERVER_HOST`/`HTTP_PORT` baked in and no sourced
+files, and `scripts/node.sh` is POSIX `sh` (the artifact is piped into `sh`, which
+is not bash everywhere). The node claims a token, fetches the command, runs it
+locally and POSTs the result to `/done/<token>`.
+
+`/join` is **not published**. WireGuard joining stays a repo command:
+
+```bash
+scripts/wireguard_join.sh <server_public_key>
+```
+
+## Virtual secrets and paths
+
+`scripts/attribution.sh` is a generic, reusable utility: it attributes a random
+virtual path to a resource (secret, key, service, request, dataset, ...). The
+path is never created on disk; only the registry under `STATE_DIR` holds the
+mapping. Paths are built from a dictionary passphrase plus random hex.
+
+```bash
+scripts/attribution.sh create secret wg-server "$(cat "$STATE_DIR/wg_public.key")"
+# -> /v/amber-river-frost-quartz-1a2b3c	<secret>
+scripts/attribution.sh resolve /v/amber-river-frost-quartz-1a2b3c
+scripts/attribution.sh ensure secret wg-server "<new value>"   # reuse identity
+scripts/attribution.sh rotate /v/amber-river-frost-quartz-1a2b3c
+scripts/attribution.sh list
+```
+
+Configuration: `ATTRIBUTION_DIRECTORY`, `ATTRIBUTION_REGISTRY`,
+`ATTRIBUTION_WORD_COUNT`, `ATTRIBUTION_SECRET_BYTES`,
+`ATTRIBUTION_PATH_NAMESPACE`, `ATTRIBUTION_DICTIONARY` (optional word list).
+The utility is independent of WireGuard and of the HTTP router.
+
+## WireGuard
+
+Setup is idempotent: `scripts/lib/wireguard.sh` reuses existing keys and an
+already configured `wg0`, so the server public key stays stable across deploys
+and joined peers keep working. Firewall chains (`nft` or `iptables`) converge to a
+single rule set on every run.
+
+## Tests
+
+```bash
+tests/run.sh
+```
+
+No root, no WireGuard, no external network: each test starts the C relay on
+loopback with temporary state. See `tests/README.md`.
 
 ## Files
 
@@ -98,8 +144,13 @@ command, runs it locally and POSTs the result to `/done/<token>`.
 - `scripts/http_handler.sh` — routes + tree (dispatch), no execution
 - `scripts/lib/http.sh` — HTTP responses, parsing, form, client
 - `scripts/lib/state.sh` — TSV + token helpers
-- `scripts/node.sh` — node script (`| sh`)
-- `scripts/network.sh` — WireGuard + firewall (single source)
+- `scripts/node.sh` — self-contained POSIX node script (`| sh`)
+- `scripts/build_published_node.sh` — renders `/node` with the address baked in
+- `scripts/network.sh` — WireGuard + firewall command wrapper
+- `scripts/lib/wireguard.sh` — idempotent WireGuard and firewall helpers
+- `scripts/attribution.sh` — virtual secret/path attribution CLI
+- `scripts/lib/virtual_path.sh` — passphrase/path/registry algorithm
 - `scripts/lib/core.sh` — paths/config/log/state helpers
+- `tests/` — isolated test subproject (`tests/run.sh`)
 - `state/db.tsv` — tokens, tasks, results
 - `shared/` — published HTTP tree
