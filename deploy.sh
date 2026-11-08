@@ -41,6 +41,7 @@ SSH_OPTIONS=(-o BatchMode=yes -o IdentitiesOnly=yes
              -o PreferredAuthentications=publickey -o StrictHostKeyChecking=accept-new)
 as_service_user() { ssh -n -i "$SSH_PRIVATE_KEY" "${SSH_OPTIONS[@]}" "$SERVICE_USER@$SERVER_HOST" "$@"; }
 copy_to_service_user() { scp -i "$SSH_PRIVATE_KEY" "${SSH_OPTIONS[@]}" "$@"; }
+remote_run() { ssh -n -i "$SSH_PRIVATE_KEY" "${SSH_OPTIONS[@]}" "$SERVICE_USER@$SERVER_HOST" 'bash -s' < "$1"; }
 
 # --- 1. bootstrap through BOOTSTRAP_USER ------------------------------------
 bootstrap_remote() {
@@ -120,23 +121,6 @@ configure_network() {
           fi" || true
 }
 
-# --- 6. user service (setsid fallback) --------------------------------------
-start_service() {
-  as_service_user 'set -e
-    mkdir -p ~/.config/systemd/user
-    cp -f ~/.beaut/deploy/files/beaut.service ~/.config/systemd/user/beaut.service
-    if command -v systemctl >/dev/null 2>&1 \
-       && systemctl --user daemon-reload 2>/dev/null \
-       && systemctl --user enable --now beaut.service 2>/dev/null; then
-      echo "beaut user service is active"
-    else
-      pkill -f "beaut/scripts/http_server.sh" 2>/dev/null || true
-      setsid bash ~/.beaut/deploy/files/start.sh \
-        > ~/.beaut/state/http.log 2>&1 < /dev/null &
-      echo "server started through setsid (see state/http.log)"
-    fi' || die "cannot start the server"
-}
-
 wait_for_server() {
   local attempt
   for attempt in 1 2 3 4 5 6 7 8 9 10; do
@@ -165,7 +149,7 @@ install_remote() {
   init_git_repo
   publish_tree
   configure_network
-  start_service
+  remote_run "$FILES_DIR/remote_install.sh"
 
   if wait_for_server; then
     log info "server active: http://$SERVER_HOST:$HTTP_PORT"
