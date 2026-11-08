@@ -36,6 +36,20 @@ assert_contains "$deploy_text" 'device.sh init' "device identity is initialized"
 assert_contains "$deploy_text" 'svr.sh init' "personal tree is initialized"
 assert_contains "$deploy_text" 'sync-peers' "approved peers are synchronized"
 assert_contains "$deploy_text" 'service_user_is_ready' "existing identity is auto-detected"
+assert_contains "$deploy_text" 'upload_site' "public site tree is uploaded"
+assert_contains "$deploy_text" 'sync_site.sh' "site tree is applied on the server"
+assert_contains "$deploy_text" "--exclude='.git'" "git repositories are not uploaded as files"
+
+# --- tracked public site ----------------------------------------------------
+assert_file_exists "$PROJECT_ROOT/site/index.html" "site home is tracked"
+assert_file_exists "$PROJECT_ROOT/site/style.css" "site stylesheet is tracked"
+assert_file_exists "$PROJECT_ROOT/site/hello/DEFAULT.sh" "site script example is tracked"
+assert_file_exists "$PROJECT_ROOT/deploy/files/sync_site.sh" "site sync script exists"
+
+handler_text="$(cat "$PROJECT_ROOT/scripts/http_handler.sh")"
+assert_contains "$handler_text" 'index.html' "directories prefer index.html"
+assert_contains "$handler_text" 'DEFAU*.sh' "directories fall back to script defaults"
+assert_contains "$handler_text" 'path_has_hidden_segment' "dot-prefixed paths stay private"
 
 # --- configuration order ----------------------------------------------------
 install_text="$(cat "$PROJECT_ROOT/deploy/files/install_privileged.sh")"

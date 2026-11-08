@@ -38,7 +38,14 @@ CONFIG_FILE="$PROJECT_ROOT/config.env"
 [[ -f "$CONFIG_FILE" ]] || CONFIG_FILE="$PROJECT_ROOT/config.env.example"
 
 LOCAL_PAYLOAD=""
-cleanup() { if [[ -n "$LOCAL_PAYLOAD" ]]; then rm -f -- "$LOCAL_PAYLOAD"; fi; }
+LOCAL_SITE_PAYLOAD=""
+LOCAL_SITE_REPOSITORIES=""
+cleanup() {
+  if [[ -n "$LOCAL_PAYLOAD" ]]; then rm -f -- "$LOCAL_PAYLOAD"; fi
+  if [[ -n "$LOCAL_SITE_PAYLOAD" ]]; then rm -f -- "$LOCAL_SITE_PAYLOAD"; fi
+  if [[ -n "$LOCAL_SITE_REPOSITORIES" ]]; then rm -f -- "$LOCAL_SITE_REPOSITORIES"; fi
+  return 0
+}
 trap cleanup EXIT
 
 # --- identity ---------------------------------------------------------------
@@ -104,6 +111,10 @@ verify_key_auth() {
 
 # --- 3. upload, then everything as SERVICE_USER -----------------------------
 upload_tree() {
+  # Remove the old trees first: scp -r merges into existing directories and
+  # would otherwise leave deleted scripts published forever.
+  as_service_user 'rm -rf ~/.beaut/scripts ~/.beaut/deploy' \
+    || die "cannot clean the remote script trees"
   copy_to_service_user -r "$SCRIPTS_DIR" "$PROJECT_ROOT/deploy" "$SERVICE_USER@$SERVER_HOST:.beaut/" \
     || die "cannot copy scripts"
   copy_to_service_user "$CONFIG_FILE" "$SERVICE_USER@$SERVER_HOST:.beaut/config.env" \
@@ -113,6 +124,55 @@ upload_tree() {
     || die "cannot copy the configuration schema"
   as_service_user "find ~/.beaut -type f -name '*.sh' -exec chmod 755 {} +" \
     || die "remote chmod failed"
+}
+
+# Upload the public site tree and apply it on the server. Plain folders/files
+# are mirrored to $PUBLISHED_ROOT; a top-level `site/<name>` that contains .git
+# is recorded as `name<TAB>remote_url` instead, then cloned or fast-forwarded on
+# the server so it behaves as a real git repository.
+upload_site() {
+  local site_directory="$PROJECT_ROOT/site"
+  local entry name remote_url remote_staging='.beaut/.site-staging'
+  local remote_repositories='.beaut/.site-repositories.tsv'
+  local -a archive_excludes=()
+
+  if [[ ! -d "$site_directory" ]]; then
+    log info "no site/ directory: leaving the public tree unchanged"
+    return 0
+  fi
+
+  LOCAL_SITE_PAYLOAD="$(mktemp "${TMPDIR:-/tmp}/beaut-site.XXXXXX.tgz")"
+  LOCAL_SITE_REPOSITORIES="$(mktemp "${TMPDIR:-/tmp}/beaut-site-repos.XXXXXX")"
+  : > "$LOCAL_SITE_REPOSITORIES"
+
+  for entry in "$site_directory"/*; do
+    [[ -e "$entry" ]] || continue
+    [[ -e "$entry/.git" ]] || continue
+    name="$(basename -- "$entry")"
+    has_command git || die "git is required for site repository: $name"
+    remote_url="$(git -C "$entry" config --get remote.origin.url 2>/dev/null || true)"
+    [[ -n "$remote_url" ]] || die "site repository $name has no origin remote"
+    printf '%s\t%s\n' "$name" "$remote_url" >> "$LOCAL_SITE_REPOSITORIES"
+    archive_excludes+=("--exclude=./$name")
+  done
+
+  tar -czf "$LOCAL_SITE_PAYLOAD" --exclude='.git' "${archive_excludes[@]}" \
+    -C "$site_directory" . || die "cannot archive site/"
+
+  as_service_user "rm -rf ~/$remote_staging && mkdir -p ~/$remote_staging" \
+    || die "cannot prepare the remote site staging directory"
+  copy_to_service_user "$LOCAL_SITE_PAYLOAD" "$SERVICE_USER@$SERVER_HOST:$remote_staging/payload.tgz" \
+    || die "cannot upload the site archive"
+  copy_to_service_user "$LOCAL_SITE_REPOSITORIES" "$SERVICE_USER@$SERVER_HOST:$remote_repositories" \
+    || die "cannot upload the site repository list"
+  as_service_user "set -e
+    cd ~/$remote_staging
+    tar xzf payload.tgz
+    rm -f payload.tgz
+    cd ~/.beaut
+    bash deploy/files/sync_site.sh ~/$remote_staging ~/$remote_repositories
+    rm -rf ~/$remote_staging ~/$remote_repositories" \
+    || die "cannot apply the site tree"
 }
 
 init_git_repo() {
@@ -195,6 +255,7 @@ install_server() {
   has_command ssh  || die "ssh is required"
   has_command scp  || die "scp is required"
   has_command curl || die "curl is required"
+  has_command tar  || die "tar is required"
 
   if [[ "$INSTALL_MODE" == "root" ]] && ! service_user_is_ready; then
     choose_bootstrap_user
@@ -212,6 +273,7 @@ install_server() {
   fi
 
   upload_tree
+  upload_site
   if [[ "$INSTALL_MODE" == "root" ]]; then
     install_privileged_scripts
   fi

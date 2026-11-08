@@ -11,8 +11,15 @@ trap 'server_stop; rm -rf -- "$sandbox"' EXIT
 
 published_root="$sandbox/shared"
 state_directory="$sandbox/state"
-mkdir -p "$published_root/docs" "$published_root/data"
+mkdir -p "$published_root/docs" "$published_root/data" "$published_root/assets" \
+  "$published_root/legacy" "$published_root/repo/.git"
+printf '<!doctype html>\n<p>fixture-home</p>\n' > "$published_root/index.html"
+printf '<!doctype html>\n<p>fixture-index</p>\n' > "$published_root/docs/index.html"
 printf '#!/bin/sh\necho fixture-default\n' > "$published_root/docs/DEFAULT.sh"
+printf 'body { color: red; }\n' > "$published_root/assets/site.css"
+printf '# notes\n' > "$published_root/assets/note.md"
+printf '#!/bin/sh\necho fixture-legacy\n' > "$published_root/legacy/DEFAULT.sh"
+printf 'secret-token\n' > "$published_root/repo/.git/config"
 printf 'id\tvalue\n1\tone\n' > "$published_root/data/table.tsv"
 
 export TOKEN_TTL_SECONDS=300
@@ -50,9 +57,44 @@ http_post /get 'token=does-not-exist&dataset=sample'
 assert_status 403 "$HTTP_STATUS" "unknown token should be forbidden"
 
 # --- static tree ------------------------------------------------------------
+http_get /
+assert_status 200 "$HTTP_STATUS" "root should resolve to index.html"
+assert_equal 'text/html; charset=utf-8' "$HTTP_CONTENT_TYPE" "root content type"
+assert_contains "$HTTP_BODY" 'fixture-home' "root index content"
+
 http_get /docs
-assert_status 200 "$HTTP_STATUS" "directory should resolve to DEFAULT"
+assert_status 200 "$HTTP_STATUS" "directory should prefer index.html"
+assert_equal 'text/html; charset=utf-8' "$HTTP_CONTENT_TYPE" "index content type"
+assert_contains "$HTTP_BODY" 'fixture-index' "index content wins over DEFAULT"
+
+http_get /docs/
+assert_status 200 "$HTTP_STATUS" "trailing slash directory"
+assert_contains "$HTTP_BODY" 'fixture-index' "trailing slash index content"
+
+http_get /docs/DEFAULT.sh
+assert_status 200 "$HTTP_STATUS" "explicit DEFAULT file is still served"
+assert_equal 'text/plain; charset=utf-8' "$HTTP_CONTENT_TYPE" "script content type"
 assert_contains "$HTTP_BODY" 'fixture-default' "DEFAULT content"
+
+http_get /legacy
+assert_status 200 "$HTTP_STATUS" "directory should fall back to DEFAULT"
+assert_equal 'text/plain; charset=utf-8' "$HTTP_CONTENT_TYPE" "DEFAULT content type"
+assert_contains "$HTTP_BODY" 'fixture-legacy' "legacy DEFAULT content"
+
+http_get /assets/site.css
+assert_status 200 "$HTTP_STATUS" "stylesheet should be served"
+assert_equal 'text/css; charset=utf-8' "$HTTP_CONTENT_TYPE" "stylesheet content type"
+
+http_get /assets/note.md
+assert_status 200 "$HTTP_STATUS" "markdown should be served"
+assert_equal 'text/markdown; charset=utf-8' "$HTTP_CONTENT_TYPE" "markdown content type"
+
+http_get /repo/.git/config
+assert_status 404 "$HTTP_STATUS" "dot-prefixed segment should be private"
+assert_not_contains "$HTTP_BODY" 'secret-token' "git config must not leak"
+
+http_get /.git/config
+assert_status 404 "$HTTP_STATUS" "root dot-prefixed segment should be private"
 
 http_get /data/table.tsv
 assert_status 200 "$HTTP_STATUS" "nested file should be served"

@@ -1,0 +1,29 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+  line-height: 1.5;
+}
+
+body {
+  margin: 0;
+  padding: 2rem 1rem;
+}
+
+main {
+  max-width: 42rem;
+  margin: 0 auto;
+}
+
+h1 {
+  margin-top: 0;
+}
+
+a {
+  color: inherit;
+}
+
+code {
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  border-radius: 0.25rem;
+  padding: 0.1rem 0.3rem;
+}

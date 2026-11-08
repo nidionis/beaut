@@ -85,33 +85,39 @@ server_stop() {
   SERVER_PID=""
 }
 
-# http_get <path>: sets HTTP_STATUS and HTTP_BODY.
+# http_capture <response_file> <curl arguments...>: sets HTTP_STATUS,
+# HTTP_CONTENT_TYPE and HTTP_BODY.
+http_capture() {
+  local response_file="$1"; shift
+  local metadata
+  metadata="$(curl -s -o "$response_file" -w '%{http_code}\n%{content_type}' "$@")"
+  HTTP_STATUS="${metadata%%$'\n'*}"
+  HTTP_CONTENT_TYPE="${metadata#*$'\n'}"
+  HTTP_BODY="$(cat "$response_file")"
+  rm -f -- "$response_file"
+}
+
+# http_get <path>: sets HTTP_STATUS, HTTP_CONTENT_TYPE and HTTP_BODY.
 http_get() {
   local path="$1" response_file
   response_file="$(mktemp)"
-  HTTP_STATUS="$(curl -s -o "$response_file" -w '%{http_code}' "$SERVER_URL$path")"
-  HTTP_BODY="$(cat "$response_file")"
-  rm -f -- "$response_file"
+  http_capture "$response_file" "$SERVER_URL$path"
 }
 
 # http_get_path_as_is <path>: keeps `..` in the request (traversal tests).
 http_get_path_as_is() {
   local path="$1" response_file
   response_file="$(mktemp)"
-  HTTP_STATUS="$(curl -s --path-as-is -o "$response_file" -w '%{http_code}' "$SERVER_URL$path")"
-  HTTP_BODY="$(cat "$response_file")"
-  rm -f -- "$response_file"
+  http_capture "$response_file" --path-as-is "$SERVER_URL$path"
 }
 
-# http_post <path> <body>: sets HTTP_STATUS and HTTP_BODY.
+# http_post <path> <body>: sets HTTP_STATUS, HTTP_CONTENT_TYPE and HTTP_BODY.
 http_post() {
   local path="$1" body="$2" response_file
   response_file="$(mktemp)"
-  HTTP_STATUS="$(curl -s -o "$response_file" -w '%{http_code}' \
+  http_capture "$response_file" \
     -X POST -H 'Content-Type: application/x-www-form-urlencoded' \
-    --data "$body" "$SERVER_URL$path")"
-  HTTP_BODY="$(cat "$response_file")"
-  rm -f -- "$response_file"
+    --data "$body" "$SERVER_URL$path"
 }
 
 # http_post_fields <path> <key=value>...: URL-encodes every field (needed for
@@ -124,8 +130,5 @@ http_post_fields() {
     curl_fields+=(--data-urlencode "$field")
   done
   response_file="$(mktemp)"
-  HTTP_STATUS="$(curl -s -o "$response_file" -w '%{http_code}' \
-    "${curl_fields[@]}" "$SERVER_URL$path")"
-  HTTP_BODY="$(cat "$response_file")"
-  rm -f -- "$response_file"
+  http_capture "$response_file" "${curl_fields[@]}" "$SERVER_URL$path"
 }

@@ -19,8 +19,9 @@ bash tests/handler_test.sh
 ```
 
 Dependencies: `bash`, `curl`, `gcc`, `mktemp`. `dash` is used as an extra POSIX
-syntax check when present. The compiled relay lives in `tests/.build/`
-(git-ignored), never in `/tmp`, because some systems mount `/tmp` `noexec`.
+syntax check when present, and `git` lets `site_test.sh` exercise clone/pull.
+The compiled relay lives in `tests/.build/` (git-ignored), never in `/tmp`,
+because some systems mount `/tmp` `noexec`.
 
 ## Layout
 
@@ -28,8 +29,9 @@ syntax check when present. The compiled relay lives in `tests/.build/`
 |------|----------|
 | `lib/assert.sh` | assertions (`equal`, `contains`, `matches`, `status`, ...) |
 | `lib/server.sh` | compile and run the C relay on loopback, isolated roots |
-| `handler_test.sh` | token lifecycle, `/done`, `/get`, static tree, 404, traversal, TTL |
+| `handler_test.sh` | token lifecycle, `/done`, `/get`, static tree, index.html, MIME, hidden paths, 404, traversal, TTL |
 | `served_node_test.sh` | `curl /node \| sh` from an empty directory, `/join` unpublished |
+| `site_test.sh` | `site/` mirror, manifest pruning, reserved names, git clone/pull |
 | `device_test.sh` | device registry, key reuse, addresses, approval, door, CLI |
 | `invite_test.sh` | hashed passMessage, uses, expiry, revocation |
 | `signin_test.sh` | `/signin`, invite auto-accept, `/signin/<id>`, `/door`, URL decoding |
@@ -45,6 +47,8 @@ syntax check when present. The compiled relay lives in `tests/.build/`
 - Each test owns a `mktemp -d` sandbox and stops its server in `EXIT` trap.
 - `handler_test.sh` starts the C relay directly; the handler is the real
   `scripts/http_handler.sh`, with `STATE_DIR` and `PUBLISHED_ROOT` overridden.
+- `site_test.sh` runs `deploy/files/sync_site.sh` against a temporary tree and a
+  local bare git repository, so it never touches the real server.
 - `network_test.sh` replaces `wg`, `ip` and `nft` with tiny fakes in a temporary
   `PATH`, proving key reuse and rule idempotence without touching the host.
 - The suite deliberately does not test real WireGuard interfaces or real

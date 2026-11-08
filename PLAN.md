@@ -26,7 +26,7 @@ Plateforme de calcul partagé minimaliste. Le serveur ne calcule jamais : il **s
 | `/signin` | GET/POST | Enrôlement d'un appareil (clé publique ; invite valide = acceptation auto) |
 | `/signin/<id>` | GET | Statut d'un appareil (`pending` / `approved` / `revoked`) |
 | `/door` | GET | Clé publique du serveur par défaut, endpoint et réseau WireGuard |
-| `/<chemin>` | GET | Arborescence `PUBLISHED_ROOT` (dossier → premier `DEFAU*.sh`) |
+| `/<chemin>` | GET | Arborescence `PUBLISHED_ROOT` (fichier, sinon `index.html`, sinon premier `DEFAU*.sh`) |
 | `/<secret>/...` | GET | Arborescence personnelle cachée (`SVR_MODE`) |
 | autre | GET | `NOT_FOUND_BODY` (variable configurable) |
 
@@ -70,6 +70,11 @@ Aucune bibliothèque de parsing HTTP. On lit uniquement :
   uploadé et l'adresse déployée, avec **aucun fichier sourcé**, en `sh` POSIX.
   `/join` n'est plus publié ; `scripts/wireguard_join.sh` et `scripts/device.sh
   join` restent des commandes du dépôt.
+- Le dossier `site/` est archivé (hors `.git`) puis appliqué par
+  `deploy/files/sync_site.sh` vers `$PUBLISHED_ROOT` ; les dossiers git de premier
+  niveau sont clonés/pullés depuis leur remote au lieu d'être uploadés.
+- Les anciens `scripts/` et `deploy/` distants sont supprimés avant copie pour
+  qu'un fichier retiré du dépôt ne reste pas publié.
 - Serveur lancé en service utilisateur systemd (`deploy/files/beaut.service`),
   secours `setsid` (fallback via `remote_install.sh`).
 - À l'issue : le serveur est joignable via le listener `socat` ou le relay C
@@ -108,6 +113,25 @@ correspondance. Le chemin est une phrase de dictionnaire + suffixe hexadécimal.
 - `owner` n'est jamais délivrable par invitation. L'HTTP n'approuve jamais :
   KNOCK reste une décision manuelle (`device.sh approve`), suivie de `sync-peers`.
 
+## Arborescence publique `site/`
+
+- Le dossier `site/` du dépôt est la source de vérité de l'arborescence publique.
+  `deploy.sh` le miroir vers `$PUBLISHED_ROOT` (`~/.beaut/shared` sur le serveur)
+  et supprime les entrées qu'il avait déployées lorsqu'elles disparaissent du
+  dépôt (manifeste privé `state/site_manifest`).
+- Résolution : `/a/b/c` sert le fichier `$PUBLISHED_ROOT/a/b/c` ; `/a/b` sert
+  `a/b/index.html` (ou `index.htm`) s'il existe, sinon le premier
+  `a/b/DEFAU*.sh`. Les pages HTML réelles et les endpoints de scripts cohabitent.
+- Le type MIME suit l'extension (`.html`, `.css`, `.js`, `.json`, `.md`, images,
+  ...) ; les scripts et fichiers inconnus restent `text/plain`.
+- Les segments de chemin commençant par un point ne sont jamais servis : `.git`,
+  `.env` et autres fichiers cachés restent privés, même dans un dépôt.
+- Un dossier de premier niveau `site/<nom>` contenant `.git` est traité comme un
+  dépôt git séparé : son URL d'origine est enregistrée, le dossier n'est pas
+  uploadé, le serveur le clone au premier déploiement puis exécute
+  `git pull --ff-only`. Il est servi à `/<nom>/`. Le remote doit être joignable
+  depuis le serveur (SSH ou HTTPS).
+
 ## Arborescence personnelle cachée et journal
 
 - `scripts/svr.sh` crée `$SVR_ROOT` (diary/, notes/, `DEFAULT.sh` statique).
@@ -124,11 +148,13 @@ correspondance. Le chemin est une phrase de dictionnaire + suffixe hexadécimal.
 Sous-projet `tests/` : `tests/run.sh`. Aucun root, aucun réseau externe, aucun
 WireGuard réel. Chaque test lance le relay C sur `127.0.0.1` avec un état
 temporaire et couvre : cycle de vie des tokens, TTL, arborescences statique et
-cachée, 404, traversée, `curl /node | sh` depuis un dossier vide, `/join` non
-publié, `/signin` + `/door`, registre des appareils, invitations hachées,
-journal Markdown, attributions virtuelles, clés WireGuard par appareil,
-synchronisation des peers et idempotence du pare-feu (commandes factices),
-`bash -n` / `gcc -fsyntax-only` / `git diff --check`.
+cachée, pages `index.html` et types MIME, chemins cachés bloqués, synchronisation
+du `site/` public (miroir, purge, dépôts git), 404, traversée,
+`curl /node | sh` depuis un dossier vide, `/join` non publié, `/signin` +
+`/door`, registre des appareils, invitations hachées, journal Markdown,
+attributions virtuelles, clés WireGuard par appareil, synchronisation des peers
+et idempotence du pare-feu (commandes factices), `bash -n` /
+`gcc -fsyntax-only` / `git diff --check`.
 
 ## Configuration
 Tout est défini dans `config.env` et `config.env.example` (le modèle sert aussi
@@ -142,6 +168,7 @@ config.env.example          modèle + schéma de repli
 deploy.sh                   orchestrateur client SSH/SFTP (SERVICE_USER auto-détecté ; BOOTSTRAP_USER en secours ; --no-root = user)
 deploy/files/bootstrap.sh   première application en root : utilisateur, clé, config racine, sudo grant
 deploy/files/install_privileged.sh  rafraîchit la copie root des scripts + config gelée
+deploy/files/sync_site.sh   miroir de site/ vers PUBLISHED_ROOT + clone/pull git
 deploy/files/remote_install.sh   phase utilisateur : service systemd + demarrage du serveur
 deploy/files/beaut.service  service utilisateur systemd
 deploy/files/start.sh       script de démarrage (fichier à part, jamais inline)
@@ -164,7 +191,8 @@ scripts/lib/passphrase.sh   mots, aléa, passphrases, secrets
 scripts/attribution.sh      CLI d'attribution virtuelle (secrets/chemins)
 scripts/lib/virtual_path.sh algorithme passphrase/chemin/registre
 scripts/lib/core.sh         chemins, config, log, état
+site/                       arborescence publique déployée vers PUBLISHED_ROOT
 tests/                      sous-projet de tests isolé (tests/run.sh)
 state/db.tsv                base d'état (tokens, travaux, résultats)
-shared/                     arborescence HTTP servie (path = fichier, dossier = DEFAU*.sh)
+shared/                     arborescence HTTP servie (fichier, sinon index.html, sinon DEFAU*.sh)
 ```

@@ -15,7 +15,9 @@
 # Static routes (everything else): the URL path mirrors a root directory.
 #   /<hidden>/...       -> $SVR_ROOT/...   (hidden personal tree)
 #   /a/b/c              -> $PUBLISHED_ROOT/a/b/c            (file)
-#   /a/b                -> $PUBLISHED_ROOT/a/b/DEFAU*.sh    (directory -> default)
+#   /a/b                -> $PUBLISHED_ROOT/a/b/index.html  (page)
+#                       -> $PUBLISHED_ROOT/a/b/DEFAU*.sh   (script fallback)
+# Dot-prefixed path segments are never served, so `.git` stays private.
 set -uo pipefail
 export LC_ALL=C
 
@@ -53,12 +55,25 @@ archive_result() {
 }
 
 # --- static tree ------------------------------------------------------------
-find_default_script() {
+# A directory prefers a real index page; DEFAU*.sh remains the script default.
+find_default_file() {
   local directory="$1" candidate
+  for candidate in "$directory/index.html" "$directory/index.htm"; do
+    if [[ -f "$candidate" ]]; then printf '%s' "$candidate"; return 0; fi
+  done
   for candidate in "$directory"/DEFAU*.sh; do
     if [[ -f "$candidate" ]]; then printf '%s' "$candidate"; return 0; fi
   done
   return 1
+}
+
+# Reject any path with a dot-prefixed segment: hidden files and `.git` must not
+# be reachable over HTTP, even inside a site repository.
+path_has_hidden_segment() {
+  case "/${1:-}/" in
+    */.*) return 0 ;;
+    *)    return 1 ;;
+  esac
 }
 
 serve_tree() {
@@ -71,8 +86,13 @@ serve_tree() {
   real_root="$(realpath -m -- "$root_dir" 2>/dev/null || printf '%s' "$root_dir")"
 
   case "$requested_path" in
-    *..*|*\\*) http_send_response 404 "${NOT_FOUND_BODY:-404}"; return ;;
+    *..*|*\\*)
+      http_send_response 404 "${NOT_FOUND_BODY:-404}"; return
+      ;;
   esac
+  if path_has_hidden_segment "$requested_path"; then
+    http_send_response 404 "${NOT_FOUND_BODY:-404}"; return
+  fi
 
   target="$(realpath -m -- "$root_dir/$requested_path" 2>/dev/null || true)"
   if [[ -z "$target" || ( "$target" != "$real_root" && "$target" != "$real_root"/* ) ]]; then
@@ -80,7 +100,7 @@ serve_tree() {
   fi
 
   if [[ -d "$target" ]]; then
-    target="$(find_default_script "$target")" \
+    target="$(find_default_file "$target")" \
       || { http_send_response 404 "${NOT_FOUND_BODY:-404}"; return; }
   fi
 

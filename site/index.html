@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>beaut</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <h1>beaut</h1>
+    <p>Minimalist shared-computing platform: a control server that serves
+       scripts and validates tokens, plus nodes that fetch them.</p>
+    <h2>Entry points</h2>
+    <ul>
+      <li><a href="/node">/node</a> — node bootstrap script
+          (<code>curl -fsS http://192.168.8.240:8080/node | sh</code>)</li>
+      <li><a href="/hello">/hello</a> — example directory default script
+          (<code>curl -fsS http://192.168.8.240:8080/hello | sh</code>)</li>
+    </ul>
+    <p>The personal journal lives under a secret prefix:
+       <code>/&lt;hidden&gt;/diary/YYYY-MM-DD.md</code>.</p>
+  </main>
+</body>
+</html>

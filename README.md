@@ -79,13 +79,51 @@ available listener and launches `scripts/http_server.c <HTTP_PORT> <handler>`.
 | `GET /signin/<id>` | device status (`pending` / `approved` / `revoked`) |
 | `GET /door` | default server public key, endpoint and WireGuard network |
 | `GET /<hidden>/...` | hidden personal tree (`SVR_MODE` path) |
-| `GET /<path>` | `PUBLISHED_ROOT` tree (read-only) |
+| `GET /<path>` | `PUBLISHED_ROOT` tree: file, `index.html`, or `DEFAU*.sh` |
 
-The static route mirrors the tree: `/a/b/c` serves `$PUBLISHED_ROOT/a/b/c`, and a
-directory serves its first `DEFAU*.sh` (`/backdoors` →
-`$PUBLISHED_ROOT/backdoors/DEFAU*.sh`). Nothing is executed server-side and no
-directory listing is generated. The hidden tree is ordinary static files served
-under the secret prefix from `$SVR_ROOT`.
+The static route mirrors the tree: `/a/b/c` serves `$PUBLISHED_ROOT/a/b/c`; a
+directory serves `index.html`/`index.htm` when present, otherwise its first
+`DEFAU*.sh` (`/hello` → `$PUBLISHED_ROOT/hello/DEFAU*.sh`). Content type follows
+the extension (HTML, CSS, JavaScript, JSON, Markdown, images); scripts and
+unknown files stay `text/plain`. Dot-prefixed path segments are never served, so
+`.git` stays private. Nothing is executed server-side and no directory listing is
+generated. The hidden tree is ordinary static files served under the secret
+prefix from `$SVR_ROOT`.
+
+## Public site tree
+
+The repository's `site/` directory is the source of truth for the public tree.
+`./deploy.sh` mirrors it into `$PUBLISHED_ROOT` (`~/.beaut/shared` on the live
+server) and removes entries it previously deployed when they disappear from the
+repository.
+
+```
+site/
+  index.html          -> /                 (text/html)
+  style.css           -> /style.css        (text/css)
+  hello/DEFAULT.sh    -> /hello            (text/plain, curl /hello | sh)
+  notes/2026-01-02.md -> /notes/2026-01-02.md (text/markdown)
+```
+
+Resolution rules:
+
+- `/a/b/c` serves the file at `$PUBLISHED_ROOT/a/b/c`.
+- `/a/b` serves `a/b/index.html` (or `index.htm`) when present, otherwise the
+  first `a/b/DEFAU*.sh`. This keeps both real pages and script endpoints.
+- Content type comes from the extension; scripts and unknown files remain
+  `text/plain`.
+- Dot-prefixed path segments are never served, so `.git`, `.env` and other
+  hidden files stay private, even inside a repository checkout.
+
+A top-level `site/<name>` folder that contains `.git` is treated as a separate
+git repository: its origin URL is recorded, the folder is **not** uploaded, and
+the server clones it on the first deploy then runs `git pull --ff-only` on later
+deploys. It is served at `/<name>/` like any other tree. The origin must be
+reachable from the server (SSH or HTTPS).
+
+The hidden personal tree (`$SVR_ROOT`, URL `/<SVR_MODE path>`) uses the same
+file/default rules but is not part of `site/`; it stays personal and is never
+deployed from the repository.
 
 ## Node
 
@@ -204,15 +242,16 @@ tests/run.sh
 ```
 
 No root, no WireGuard, no external network: each test starts the C relay on
-loopback with temporary state. Suites cover tokens, static/hidden trees, device
-registry, invites, `/signin` + `/door`, journal, WireGuard peer idempotence and
-the server-rendered node artifact. See `tests/README.md`.
+loopback with temporary state. Suites cover tokens, static/hidden trees, public
+site sync, device registry, invites, `/signin` + `/door`, journal, WireGuard
+peer idempotence and the server-rendered node artifact. See `tests/README.md`.
 
 ## Files
 
 - `deploy.sh` — client orchestrator (auto-detected SERVICE_USER → BOOTSTRAP_USER fallback)
 - `deploy/files/bootstrap.sh` — first application as root
 - `deploy/files/install_privileged.sh` — refresh the root-owned scripts/config
+- `deploy/files/sync_site.sh` — mirror `site/`, clone/pull git-backed entries
 - `deploy/files/remote_install.sh` — user phase: systemd unit + server start
 - `deploy/files/beaut.service` — systemd user service
 - `deploy/files/start.sh` — server launcher (standalone file, never inline)
@@ -235,6 +274,7 @@ the server-rendered node artifact. See `tests/README.md`.
 - `scripts/attribution.sh` — virtual secret/path attribution CLI
 - `scripts/lib/virtual_path.sh` — passphrase/path/registry algorithm
 - `scripts/lib/core.sh` — paths/config/log/state helpers
+- `site/` — public site tree deployed to `$PUBLISHED_ROOT`
 - `tests/` — isolated test subproject (`tests/run.sh`)
 - `state/db.tsv` — tokens, tasks, results
 - `shared/` — published HTTP tree

@@ -21,10 +21,41 @@ http_send_response() {
     "$status_code" "$(http_reason_phrase "$status_code")" "${#response_body}" "$response_body"
 }
 
+# Pick a content type from the file extension. Scripts and unknown files stay
+# text/plain: the platform serves shell code meant for `curl … | sh`, while a
+# site tree can also contain real HTML, stylesheets, Markdown and images.
+http_content_type_for_file() {
+  local file_path="${1:-}" extension
+  extension="${file_path##*/}"
+  if [[ "$extension" == *.* ]]; then
+    extension="${extension##*.}"
+  else
+    extension=""
+  fi
+  case "${extension,,}" in
+    html|htm)   printf 'text/html; charset=utf-8' ;;
+    css)        printf 'text/css; charset=utf-8' ;;
+    js|mjs)     printf 'application/javascript; charset=utf-8' ;;
+    json)       printf 'application/json; charset=utf-8' ;;
+    md|markdown) printf 'text/markdown; charset=utf-8' ;;
+    svg)        printf 'image/svg+xml' ;;
+    png)        printf 'image/png' ;;
+    jpg|jpeg)   printf 'image/jpeg' ;;
+    gif)        printf 'image/gif' ;;
+    webp)       printf 'image/webp' ;;
+    ico)        printf 'image/x-icon' ;;
+    pdf)        printf 'application/pdf' ;;
+    wasm)       printf 'application/wasm' ;;
+    *)          printf 'text/plain; charset=utf-8' ;;
+  esac
+}
+
 http_send_file() {
-  local file_path="$1" file_size
+  local file_path="$1" file_size content_type
   file_size="$(wc -c < "$file_path")"
-  printf 'HTTP/1.1 200 OK\r\nContent-Length: %s\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n' "$file_size"
+  content_type="$(http_content_type_for_file "$file_path")"
+  printf 'HTTP/1.1 200 OK\r\nContent-Length: %s\r\nContent-Type: %s\r\nConnection: close\r\n\r\n' \
+    "$file_size" "$content_type"
   cat -- "$file_path"
 }
 
