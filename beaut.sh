@@ -8,7 +8,7 @@ load_config
 
 case "${1:-}" in
   server)
-    bash "$ROOT_DIR/scripts/wireguard_setup.sh"
+    bash "$ROOT_DIR/scripts/network.sh" setup
     exec bash "$ROOT_DIR/scripts/http_server.sh"
     ;;
   node)

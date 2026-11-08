@@ -7,6 +7,6 @@ set -euo pipefail
 ROOT_LIB_DIR=/usr/local/lib/beaut
 
 case "${1:-all}" in
-  all|"") bash "$ROOT_LIB_DIR/scripts/wireguard_setup.sh" ;;
+  all|"") bash "$ROOT_LIB_DIR/scripts/network.sh" setup ;;
   *)      bash "$ROOT_LIB_DIR/scripts/network.sh" "$@" ;;
 esac
