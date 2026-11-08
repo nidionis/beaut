@@ -30,8 +30,14 @@ syntax check when present. The compiled relay lives in `tests/.build/`
 | `lib/server.sh` | compile and run the C relay on loopback, isolated roots |
 | `handler_test.sh` | token lifecycle, `/done`, `/get`, static tree, 404, traversal, TTL |
 | `served_node_test.sh` | `curl /node \| sh` from an empty directory, `/join` unpublished |
+| `device_test.sh` | device registry, key reuse, addresses, approval, door, CLI |
+| `invite_test.sh` | hashed passMessage, uses, expiry, revocation |
+| `signin_test.sh` | `/signin`, invite auto-accept, `/signin/<id>`, `/door`, URL decoding |
+| `svr_test.sh` | random/sha/plain hidden paths, persistence, hidden-tree HTTP |
+| `journal_test.sh` | Markdown journal appends, dates, listing |
+| `deploy_publish_test.sh` | server-rendered node artifact and deploy wiring |
 | `virtual_path_test.sh` | create/ensure/resolve/rotate/remove, uniqueness, custom dictionary |
-| `network_test.sh` | WireGuard key reuse and idempotent firewall rules (fake commands) |
+| `network_test.sh` | per-device keys, peer sync idempotence, firewall rules (fake commands) |
 | `syntax_test.sh` | `bash -n`, `gcc -fsyntax-only`, `git diff --check`, POSIX artifact |
 
 ## Notes

@@ -9,19 +9,8 @@
 # Registry columns: kind | name | virtual_path | resource | secret | created_at
 set -uo pipefail
 
-ATTRIBUTION_BUILTIN_WORDS=(
-  amber anchor apple arrow basin beacon birch breeze bridge candle
-  canyon cedar cipher clover comet coral crimson dawn delta ember
-  falcon fern fjord flint forest fossil frost garnet glacier granite
-  harbor hazel heron hollow ivory jade juniper kettle lagoon lantern
-  larch lava lemon lilac linen maple marble meadow mint mirror
-  mist moss nectar nickel north oak oasis olive onyx orchid
-  pebble pine plume pond quartz quill rain raven reed ridge
-  river robin root saffron sage sand shade silver slate snow
-  solar spruce star steam stone storm summit thistle thunder tide
-  timber topaz tulip umber valley vapor velvet violet walnut wave
-  willow wind winter wolf zephyr
-)
+VIRTUAL_PATH_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$VIRTUAL_PATH_LIB_DIR/passphrase.sh"
 
 attribution_directory() {
   printf '%s' "${ATTRIBUTION_DIRECTORY:-${STATE_DIR:?STATE_DIR is required}/attributions}"
@@ -51,74 +40,27 @@ attribution_validate_field() {
   esac
 }
 
+# Backwards-compatible aliases for callers of the original attribution helpers.
 attribution_words_load() {
-  local dictionary="${ATTRIBUTION_DICTIONARY:-}" word
-  local -A seen_words=()
-  ATTRIBUTION_WORDS=()
-  if [[ -n "$dictionary" && -r "$dictionary" ]]; then
-    while IFS= read -r word; do
-      word="${word//[[:space:]]/}"
-      [[ -n "$word" ]] || continue
-      [[ -n "${seen_words[$word]:-}" ]] && continue
-      seen_words[$word]=1
-      ATTRIBUTION_WORDS+=("$word")
-    done < "$dictionary"
-  fi
-  if (( ${#ATTRIBUTION_WORDS[@]} == 0 )); then
-    ATTRIBUTION_WORDS=("${ATTRIBUTION_BUILTIN_WORDS[@]}")
-  fi
+  passphrase_words_load "${ATTRIBUTION_DICTIONARY:-}"
+  ATTRIBUTION_WORDS=("${PASSPHRASE_WORDS[@]}")
 }
 
 attribution_random_integer() {
-  local upper_bound="${1:?missing upper bound}" value=""
-  if (( upper_bound <= 1 )); then
-    printf '0'
-    return 0
-  fi
-  if [[ -r /dev/urandom ]]; then
-    value="$(od -An -N4 -tu4 /dev/urandom 2>/dev/null | tr -d '[:space:]')"
-  fi
-  if [[ ! "${value:-}" =~ ^[0-9]+$ ]]; then
-    value="$RANDOM"
-  fi
-  printf '%s' "$(( value % upper_bound ))"
+  passphrase_random_integer "$@"
 }
 
 attribution_random_hex() {
-  local byte_count="${1:-24}" value=""
-  if [[ -r /dev/urandom ]]; then
-    value="$(od -An -N"$byte_count" -tx1 /dev/urandom 2>/dev/null | tr -d '[:space:]')"
-  fi
-  if [[ -z "${value:-}" ]]; then
-    value="$(printf '%04x%04x%04x%04x' "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM")"
-  fi
-  printf '%s' "$value"
+  passphrase_random_hex "$@"
 }
 
 attribution_generate_secret() {
-  local byte_count="${1:-${ATTRIBUTION_SECRET_BYTES:-24}}"
-  attribution_random_hex "$byte_count"
+  passphrase_generate_secret "${1:-${ATTRIBUTION_SECRET_BYTES:-24}}"
 }
 
 attribution_generate_passphrase() {
-  local word_count="${1:-${ATTRIBUTION_WORD_COUNT:-4}}" index word result=""
-  local -A used_words=()
-  attribution_words_load
-  local total_words=${#ATTRIBUTION_WORDS[@]}
-  (( total_words > 0 )) || {
-    printf 'no dictionary words available\n' >&2
-    return 1
-  }
-  (( word_count > total_words )) && word_count=$total_words
-  (( word_count > 0 )) || word_count=1
-  while (( ${#used_words[@]} < word_count )); do
-    index="$(attribution_random_integer "$total_words")"
-    word="${ATTRIBUTION_WORDS[$index]}"
-    [[ -n "${used_words[$word]:-}" ]] && continue
-    used_words[$word]=1
-    result="${result:+$result-}$word"
-  done
-  printf '%s' "$result"
+  passphrase_generate_passphrase \
+    "${1:-${ATTRIBUTION_WORD_COUNT:-4}}" "${ATTRIBUTION_DICTIONARY:-}"
 }
 
 attribution_generate_path() {

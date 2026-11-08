@@ -18,9 +18,23 @@ cat > "$fake_bin/wg" <<'FAKE_WG'
 case "${1:-}" in
   genkey) printf 'PRIVATE-KEY-FIXED\n' ;;
   pubkey) cat >/dev/null; printf 'PUBLIC-KEY-DERIVED\n' ;;
+  show)
+    if [[ "${2:-}" == "wg0" && "${3:-}" == "peers" ]]; then
+      [[ -f "${FAKE_WG_PEERS:-/nonexistent}" ]] && cat "$FAKE_WG_PEERS" || true
+    fi
+    ;;
   set)
     if [[ -n "${FAKE_WG_STATE:-}" ]]; then
       printf 'wg %s\n' "$*" >> "$FAKE_WG_STATE"
+    fi
+    if [[ "${2:-}" == "wg0" && "${3:-}" == "peer" && -n "${FAKE_WG_PEERS:-}" ]]; then
+      peer_key="${4:-}"
+      if [[ "${5:-}" == "remove" ]]; then
+        grep -vxF -- "$peer_key" "$FAKE_WG_PEERS" > "$FAKE_WG_PEERS.tmp" 2>/dev/null || true
+        mv -- "$FAKE_WG_PEERS.tmp" "$FAKE_WG_PEERS"
+      elif [[ -n "$peer_key" ]]; then
+        grep -qxF -- "$peer_key" "$FAKE_WG_PEERS" 2>/dev/null || printf '%s\n' "$peer_key" >> "$FAKE_WG_PEERS"
+      fi
     fi
     ;;
   *) exit 2 ;;
@@ -107,6 +121,8 @@ FAKE_IP_STATEFUL
 chmod 755 "$fake_bin/ip"
 export FAKE_IP_STATE="$sandbox/ip-state"
 export FAKE_WG_STATE="$sandbox/wg-state"
+export FAKE_WG_PEERS="$sandbox/wg-peers"
+: > "$FAKE_WG_PEERS"
 export SERVER_HOST='127.0.0.1'
 
 # --- key reuse --------------------------------------------------------------
@@ -165,3 +181,39 @@ assert_equal '1' \
   "node address added once"
 assert_contains "$(cat "$FAKE_IP_STATE.addresses")" '10.66.0.2/24' "node address"
 assert_contains "$(cat "$FAKE_WG_STATE")" 'peer SERVER-PUBLIC-KEY' "peer configured"
+
+# --- per-device peers from the registry ------------------------------------
+device_registry_initialize
+test_key() {
+  printf '%s%s=' "$(printf 'A%.0s' {1..42})" "$1"
+}
+approved_key="$(test_key 1)"
+pending_key="$(test_key 2)"
+revoked_key="$(test_key 3)"
+approved_id="$(device_add laptop "$approved_key" trusted approved)"
+pending_id="$(device_add phone "$pending_key" guest pending)"
+revoked_id="$(device_add tablet "$revoked_key" guest approved)"
+device_revoke "$revoked_id"
+
+sync_wireguard_peers
+assert_contains "$(cat "$FAKE_WG_PEERS")" "$approved_key" "approved device becomes a peer"
+assert_not_contains "$(cat "$FAKE_WG_PEERS")" "$pending_key" "pending device is not a peer"
+assert_not_contains "$(cat "$FAKE_WG_PEERS")" "$revoked_key" "revoked device is not a peer"
+assert_contains "$(cat "$FAKE_WG_STATE")" "allowed-ips 10.66.0.2/32" "approved address is scoped to /32"
+# Unknown peers (not in the registry) are left alone.
+assert_contains "$(cat "$FAKE_WG_PEERS")" 'SERVER-PUBLIC-KEY' "unknown peer is preserved"
+
+# Idempotence: a second sync must not remove an already-converged peer.
+sync_wireguard_peers
+assert_contains "$(cat "$FAKE_WG_PEERS")" "$approved_key" "approved peer survives a second sync"
+assert_not_contains "$(cat "$FAKE_WG_PEERS")" "$pending_key" "pending peer stays absent"
+
+device_revoke "$approved_id"
+sync_wireguard_peers
+assert_not_contains "$(cat "$FAKE_WG_PEERS")" "$approved_key" "revoked peer is removed"
+
+# --- client configuration uses the registry address -----------------------
+configure_wireguard_client 'SERVER-PUBLIC-KEY' '10.66.0.9'
+assert_contains "$(cat "$FAKE_IP_STATE.addresses")" '10.66.0.9/24' "client address"
+assert_contains "$(cat "$FAKE_WG_STATE")" 'peer SERVER-PUBLIC-KEY' "client server peer"
+assert_contains "$(cat "$FAKE_WG_STATE")" 'endpoint 127.0.0.1:51820' "client endpoint"

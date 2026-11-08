@@ -2,14 +2,23 @@
 # lib/wireguard.sh — idempotent WireGuard and firewall helpers (sourced).
 # Every function is safe to re-run: keys are reused, an already configured
 # interface is kept, and each firewall chain converges to one rule set.
+#
+# The server keeps its own per-device key in state/wg (legacy state/wg_*.key is
+# still honoured). Approved devices are synchronized as peers; a device only
+# receives its own key, never another device's private material.
 set -uo pipefail
 
+WIREGUARD_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if ! declare -F device_private_key_file >/dev/null 2>&1; then
+  . "$WIREGUARD_LIB_DIR/devices.sh"
+fi
+
 wireguard_private_key_file() {
-  printf '%s' "${WG_PRIVATE_KEY_FILE:-$STATE_DIR/wg_private.key}"
+  device_private_key_file
 }
 
 wireguard_public_key_file() {
-  printf '%s' "${WG_PUBLIC_KEY_FILE:-$STATE_DIR/wg_public.key}"
+  device_public_key_file
 }
 
 wireguard_network_prefix() {
@@ -32,7 +41,7 @@ ensure_wireguard_keys() {
   local private_file public_file
   private_file="$(wireguard_private_key_file)"
   public_file="$(wireguard_public_key_file)"
-  mkdir -p -- "$STATE_DIR"
+  mkdir -p -- "$(dirname "$private_file")"
 
   if [[ -s "$private_file" ]]; then
     log debug "reusing WireGuard private key: $private_file"
@@ -130,6 +139,46 @@ setup_nat() {
   fi
 }
 
+# Apply the registry to the live interface: approved, non-owner devices become
+# peers. Peers that are in the registry but no longer approved are removed;
+# unknown peers are left alone (another tool may own them).
+sync_wireguard_peers() {
+  has_command wg || die "wireguard-tools is required (wg)"
+  if ! wireguard_interface_exists; then
+    log warn "wg0 is absent: cannot synchronize device peers"
+    return 0
+  fi
+
+  local desired_file current_file registry public_key address peer
+  desired_file="$(mktemp)"
+  current_file="$(mktemp)"
+
+  device_approved_rows \
+    | awk -F'\t' '$5!="owner" && $4!="" {print $3"\t"$4}' > "$desired_file"
+  wg show wg0 peers 2>/dev/null > "$current_file" || true
+
+  while IFS=$'\t' read -r public_key address; do
+    [[ -n "$public_key" && -n "$address" ]] || continue
+    wg set wg0 peer "$public_key" allowed-ips "$address/32" || true
+  done < "$desired_file"
+
+  registry="$(device_registry_file)"
+  if [[ -f "$registry" ]]; then
+    while IFS= read -r peer; do
+      [[ -n "$peer" ]] || continue
+      if awk -F'\t' -v key="$peer" '$1==key{found=1} END{exit(found?0:1)}' "$desired_file"; then
+        continue
+      fi
+      if awk -F'\t' -v key="$peer" '$3==key{found=1} END{exit(found?0:1)}' "$registry"; then
+        wg set wg0 peer "$peer" remove || true
+      fi
+    done < "$current_file"
+  fi
+
+  rm -f -- "$desired_file" "$current_file"
+  log info "WireGuard peers synchronized with the device registry"
+}
+
 configure_wireguard_server() {
   has_command wg || die "wireguard-tools is required (wg)"
   has_command ip || die "iproute2 is required (ip)"
@@ -154,41 +203,50 @@ configure_wireguard_server() {
 
   open_ports
   setup_nat
+  sync_wireguard_peers
   log info "WireGuard ready. Public key: $(cat "$(wireguard_public_key_file)")"
 }
 
-join_wireguard() {
-  local server_public_key="${1:?usage: join_wireguard <server_public_key>}"
+# Configure a joining device with the address allocated by the registry.
+configure_wireguard_client() {
+  local server_public_key="${1:?usage: configure_wireguard_client <server_public_key> <client_address>}"
+  local client_address="${2:?usage: configure_wireguard_client <server_public_key> <client_address>}"
   has_command wg || die "wireguard-tools is required (wg)"
   has_command ip || die "iproute2 is required (ip)"
 
   ensure_wireguard_keys
-  local private_file public_file address_prefix node_address
+  local private_file public_file address_prefix endpoint
   private_file="$(wireguard_private_key_file)"
   public_file="$(wireguard_public_key_file)"
   address_prefix="$(wireguard_network_prefix)"
+  endpoint="${WG_SERVER_ENDPOINT:-$SERVER_HOST:$WG_PORT}"
 
   if wireguard_interface_exists; then
-    node_address="$(wireguard_interface_address)"
-  fi
-  [[ -n "${node_address:-}" ]] || node_address="$(next_wireguard_node_address)"
-
-  if wireguard_interface_exists; then
-    log info "reusing interface wg0 ($node_address/$address_prefix)"
+    log info "reusing interface wg0 ($client_address/$address_prefix)"
   else
     ip link add wg0 type wireguard
-    log info "created interface wg0 ($node_address/$address_prefix)"
+    log info "created interface wg0 ($client_address/$address_prefix)"
   fi
 
-  if ! wireguard_interface_has_address "$node_address"; then
-    ip address add "$node_address/$address_prefix" dev wg0
+  if ! wireguard_interface_has_address "$client_address"; then
+    ip address add "$client_address/$address_prefix" dev wg0
   fi
   wg set wg0 private-key "$private_file"
   wg set wg0 peer "$server_public_key" \
-    endpoint "$SERVER_HOST:$WG_PORT" \
+    endpoint "$endpoint" \
     allowed-ips "$WG_NETWORK" \
     persistent-keepalive 25
   ip link set wg0 up
 
-  log info "node WireGuard ready. IP: $node_address  Public key: $(cat "$public_file")"
+  log info "device WireGuard ready. IP: $client_address  Public key: $(cat "$public_file")"
+}
+
+# Backwards-compatible helper: pick the next free address from the interface.
+join_wireguard() {
+  local server_public_key="${1:?usage: join_wireguard <server_public_key>}"
+  local node_address
+  ensure_wireguard_keys
+  node_address="$(wireguard_interface_address || true)"
+  [[ -n "$node_address" ]] || node_address="$(next_wireguard_node_address)"
+  configure_wireguard_client "$server_public_key" "$node_address"
 }

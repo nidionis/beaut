@@ -7,8 +7,13 @@
 #   GET  /work/<token>  -> return the command bound to the token
 #   POST /done/<token>  -> store the result bound to the token
 #   POST /get           -> dataset request (body: key=value&key=value)
+#   GET  /signin        -> enrollment instructions
+#   POST /signin        -> accept a device public key (invite auto-accepts)
+#   GET  /signin/<id>   -> device status
+#   GET  /door          -> default server public key and WireGuard endpoint
 #
-# Static route (everything else): the URL path mirrors $PUBLISHED_ROOT
+# Static routes (everything else): the URL path mirrors a root directory.
+#   /<hidden>/...       -> $SVR_ROOT/...   (hidden personal tree)
 #   /a/b/c              -> $PUBLISHED_ROOT/a/b/c            (file)
 #   /a/b                -> $PUBLISHED_ROOT/a/b/DEFAU*.sh    (directory -> default)
 set -uo pipefail
@@ -17,6 +22,9 @@ export LC_ALL=C
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib/core.sh"
 . "$SCRIPT_DIR/lib/http.sh"
+. "$SCRIPT_DIR/lib/devices.sh"
+. "$SCRIPT_DIR/lib/invites.sh"
+. "$SCRIPT_DIR/lib/personal_tree.sh"
 load_config
 
 STATE_DB="$STATE_DIR/db.tsv"
@@ -54,8 +62,9 @@ find_default_script() {
 }
 
 serve_tree() {
-  local requested_path="$1" root_dir real_root target
-  root_dir="${PUBLISHED_ROOT:-}"
+  local requested_path="$1" root_directory="${2:-${PUBLISHED_ROOT:-}}"
+  local root_dir real_root target
+  root_dir="$root_directory"
   if [[ -z "$root_dir" || ! -d "$root_dir" ]]; then
     http_send_response 404 "${NOT_FOUND_BODY:-404}"; return
   fi
@@ -80,6 +89,93 @@ serve_tree() {
   else
     http_send_response 404 "${NOT_FOUND_BODY:-404}"
   fi
+}
+
+# --- device enrollment -------------------------------------------------------
+device_name_sanitize() {
+  local name="${1:-device}"
+  name="${name//$'\t'/ }"
+  name="${name//$'\n'/ }"
+  name="${name//\//-}"
+  name="${name:0:64}"
+  [[ -n "$name" ]] || name="device"
+  printf '%s' "$name"
+}
+
+enroll_device() {
+  local public_key device_name pass_message name existing trust status
+  local invite_row invite_id device_id address response
+
+  public_key="$(http_get_form_param public_key || true)"
+  device_name="$(http_get_form_param device_name || true)"
+  pass_message="$(http_get_form_param pass_message || true)"
+
+  if [[ -z "$public_key" ]]; then
+    http_send_response 400 "missing public_key"; return
+  fi
+  if ! device_validate_public_key "$public_key"; then
+    http_send_response 400 "invalid public_key"; return
+  fi
+  name="$(device_name_sanitize "$device_name")"
+
+  existing="$(device_find_by_public_key "$public_key" || true)"
+  if [[ -n "$existing" ]]; then
+    device_id="$(printf '%s' "$existing" | cut -f1)"
+    status="$(printf '%s' "$existing" | cut -f6)"
+    trust="$(printf '%s' "$existing" | cut -f5)"
+    address="$(printf '%s' "$existing" | cut -f4)"
+    http_send_response 200 "$(printf 'device_id=%s\nstatus=%s\ntrust=%s\naddress=%s' \
+      "$device_id" "$status" "$trust" "$address")"
+    return
+  fi
+
+  trust="guest"
+  status="pending"
+  if [[ -n "$pass_message" ]]; then
+    invite_row="$(invite_find_usable_by_secret_hash "$(invite_hash_secret "$pass_message")" || true)"
+    if [[ -n "$invite_row" ]]; then
+      invite_id="$(printf '%s' "$invite_row" | cut -f1)"
+      trust="$(printf '%s' "$invite_row" | cut -f2)"
+      status="approved"
+    fi
+  fi
+
+  device_id="$(device_add "$name" "$public_key" "$trust" "$status")" || {
+    http_send_response 400 "cannot enroll device"
+    return
+  }
+  if [[ -n "${invite_id:-}" ]]; then
+    invite_consume "$invite_id" || true
+  fi
+  address="$(device_field "$device_id" 4)"
+  http_send_response 200 "$(printf 'device_id=%s\nstatus=%s\ntrust=%s\naddress=%s' \
+    "$device_id" "$status" "$trust" "$address")"
+}
+
+serve_device_status() {
+  local device_id="$1" row
+  row="$(device_find "$device_id")" || {
+    http_send_response 404 "${NOT_FOUND_BODY:-404}"; return
+  }
+  [[ -n "$row" ]] || { http_send_response 404 "${NOT_FOUND_BODY:-404}"; return; }
+  http_send_response 200 "$(printf 'device_id=%s\nstatus=%s\ntrust=%s\naddress=%s' \
+    "$device_id" "$(printf '%s' "$row" | cut -f6)" \
+    "$(printf '%s' "$row" | cut -f5)" "$(printf '%s' "$row" | cut -f4)")"
+}
+
+serve_door() {
+  local door_id row
+  door_id="$(device_default_door_id || true)"
+  if [[ -z "$door_id" ]]; then
+    http_send_response 404 "no approved door"
+    return
+  fi
+  row="$(device_find "$door_id")" || {
+    http_send_response 404 "no approved door"; return
+  }
+  http_send_response 200 "$(printf 'public_key=%s\nendpoint=%s:%s\nnetwork=%s\nserver_address=%s' \
+    "$(printf '%s' "$row" | cut -f3)" "$SERVER_HOST" "$WG_PORT" "$WG_NETWORK" \
+    "$(printf '%s' "$row" | cut -f4)")"
 }
 
 # --- routing ----------------------------------------------------------------
@@ -136,7 +232,24 @@ case "$url_path" in
       http_send_response 200 "dataset $dataset granted to token $request_token"
     fi
     ;;
+  signin)
+    if [[ "${http_method^^}" == "POST" ]]; then
+      enroll_device
+    else
+      http_send_response 200 "POST public_key, device_name and optional pass_message to enroll this device"
+    fi
+    ;;
+  signin/*)
+    serve_device_status "${url_path#signin/}"
+    ;;
+  door)
+    serve_door
+    ;;
   *)
-    serve_tree "$url_path"
+    if personal_tree_relative_path="$(personal_tree_match_path "$url_path" 2>/dev/null)"; then
+      serve_tree "$personal_tree_relative_path" "$(personal_tree_root)"
+    else
+      serve_tree "$url_path"
+    fi
     ;;
 esac

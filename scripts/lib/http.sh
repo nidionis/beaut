@@ -53,14 +53,61 @@ http_parse_request() {
   fi
 }
 
+http_url_decode() {
+  local encoded="${1:-}" decoded="" character hex
+  while [[ -n "$encoded" ]]; do
+    character="${encoded:0:1}"
+    encoded="${encoded:1}"
+    case "$character" in
+      '+')
+        decoded+=" "
+        ;;
+      '%')
+        hex="${encoded:0:2}"
+        if [[ "$hex" =~ ^[0-9A-Fa-f]{2}$ ]]; then
+          # NUL cannot be represented in a bash string; every other byte can.
+          if [[ "$hex" != "00" ]]; then
+            printf -v character '%b' "\\x$hex"
+            decoded+="$character"
+          fi
+          encoded="${encoded:2}"
+        else
+          decoded+="%"
+        fi
+        ;;
+      *)
+        decoded+="$character"
+        ;;
+    esac
+  done
+  printf '%s' "$decoded"
+}
+
+# Extract one application/x-www-form-urlencoded field. Values may contain '='
+# (WireGuard public keys end with one), so only the first '=' is a separator.
 http_get_form_param() {
-  local key="$1"
-  printf '%s' "$request_body" | awk -F'[&?]' -v k="$key" '{
-    for (i=1;i<=NF;i++) {
-      split($i,a,"=")
-      if (a[1]==k) { print a[2]; exit }
-    }
-  }'
+  local wanted_key="${1:-}" pair key value remaining
+  remaining="${request_body:-}"
+  while [[ -n "$remaining" ]]; do
+    pair="${remaining%%&*}"
+    if [[ "$remaining" == *"&"* ]]; then
+      remaining="${remaining#*&}"
+    else
+      remaining=""
+    fi
+    key="${pair%%=*}"
+    if [[ "$pair" == *"="* ]]; then
+      value="${pair#*=}"
+    else
+      value=""
+    fi
+    key="$(http_url_decode "$key")"
+    if [[ "$key" == "$wanted_key" ]]; then
+      http_url_decode "$value"
+      return 0
+    fi
+  done
+  return 1
 }
 
 http_request() {

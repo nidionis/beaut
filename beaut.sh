@@ -19,11 +19,21 @@ case "${1:-}" in
     state_init
     echo "state initialized in $STATE_DIR"
     ;;
+  device)
+    shift
+    exec bash "$ROOT_DIR/scripts/device.sh" "$@"
+    ;;
+  svr)
+    shift
+    exec bash "$ROOT_DIR/scripts/svr.sh" "$@"
+    ;;
   *)
     cat >&2 <<EOF
-usage: $0 {server|node|init}
+usage: $0 {server|node|device|svr|init}
   server  configure WireGuard (requires root) and serve HTTP
   node    claim, execute and report one task
+  device  per-device identity, invites and enrollment
+  svr     hidden personal tree and Markdown journal
   init    create the state directory
 EOF
     exit 2

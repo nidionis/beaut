@@ -80,8 +80,13 @@ tar xzf "$PAYLOAD_ARCHIVE" -C "$WORK_DIR"
 install -d -m 755 -o root -g root "$ROOT_LIB_DIR"
 rm -rf -- "$ROOT_LIB_DIR/scripts"
 cp -a "$WORK_DIR/scripts" "$ROOT_LIB_DIR/scripts"
-cat "$WORK_DIR/config.env.example" > "$ROOT_LIB_DIR/config.env"
-printf 'SERVICE_ROOT=/var/lib/beaut\nSTATE_DIR=/var/lib/beaut/state\nPUBLISHED_ROOT=/var/lib/beaut/shared\n' >> "$ROOT_LIB_DIR/config.env"
+# Overrides first, then the schema: the example uses ${VAR:-default}, so the
+# service-user paths win and every derived path (STATE_DIR, DEVICE_DIRECTORY,
+# SVR_ROOT, ...) is computed from them.
+printf 'SERVICE_ROOT=%s\nSTATE_DIR=%s\nPUBLISHED_ROOT=%s\n' \
+  "$TARGET_HOME/.beaut" "$TARGET_HOME/.beaut/state" "$TARGET_HOME/.beaut/shared" \
+  > "$ROOT_LIB_DIR/config.env"
+cat "$WORK_DIR/config.env.example" >> "$ROOT_LIB_DIR/config.env"
 chown -R root:root "$ROOT_LIB_DIR"
 chmod -R go-w "$ROOT_LIB_DIR"
 find "$ROOT_LIB_DIR/scripts" -type f -name '*.sh' -exec chmod 755 {} +

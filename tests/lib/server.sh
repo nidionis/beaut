@@ -113,3 +113,19 @@ http_post() {
   HTTP_BODY="$(cat "$response_file")"
   rm -f -- "$response_file"
 }
+
+# http_post_fields <path> <key=value>...: URL-encodes every field (needed for
+# WireGuard public keys containing '+', '/' and '=').
+http_post_fields() {
+  local path="$1"; shift
+  local response_file field
+  local -a curl_fields=()
+  for field in "$@"; do
+    curl_fields+=(--data-urlencode "$field")
+  done
+  response_file="$(mktemp)"
+  HTTP_STATUS="$(curl -s -o "$response_file" -w '%{http_code}' \
+    "${curl_fields[@]}" "$SERVER_URL$path")"
+  HTTP_BODY="$(cat "$response_file")"
+  rm -f -- "$response_file"
+}

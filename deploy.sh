@@ -6,10 +6,11 @@
 #   ./deploy.sh --debug      verbose remote diagnostics
 #
 # Install modes:
-#   privileged (default): BOOTSTRAP_USER (root recommended) applies
-#     deploy/files/bootstrap.sh: creates SERVICE_USER, authorizes its key,
-#     installs the root-owned copy, writes the sudo grant, starts the service.
-#     WireGuard is configured through the sudo grant.
+#   privileged (default): SERVICE_USER is used directly when its key and
+#     passwordless sudo already work. A fresh host falls back to BOOTSTRAP_USER,
+#     which applies deploy/files/bootstrap.sh: creates SERVICE_USER, authorizes
+#     its key, installs the root-owned copy, writes the sudo grant, starts the
+#     service. WireGuard is configured through the sudo grant.
 #   user (--no-root): connect as SERVICE_USER with the key only, install under
 #     $HOME/.beaut and start the service without any sudo; no WireGuard.
 #
@@ -41,12 +42,18 @@ cleanup() { if [[ -n "$LOCAL_PAYLOAD" ]]; then rm -f -- "$LOCAL_PAYLOAD"; fi; }
 trap cleanup EXIT
 
 # --- identity ---------------------------------------------------------------
+# The normal case is an already bootstrapped host: SERVICE_USER authenticates
+# with the configured key and passwordless sudo works. Only a fresh host needs
+# BOOTSTRAP_USER, which is then used as the first application identity.
+service_user_is_ready() {
+  as_service_user true >/dev/null 2>&1 || return 1
+  as_service_user 'sudo -n true' >/dev/null 2>&1 || return 1
+  return 0
+}
+
 choose_bootstrap_user() {
-  local default="${BOOTSTRAP_USER:-root}" answer=""
-  if [[ -t 0 ]]; then
-    read -r -p "Bootstrap user for the first connection [$default]: " answer < /dev/tty || true
-  fi
-  BOOTSTRAP_USER="${answer:-$default}"
+  local fallback="${BOOTSTRAP_USER:-root}"
+  BOOTSTRAP_USER="$fallback"
   [[ -n "$BOOTSTRAP_USER" ]] || die "BOOTSTRAP_USER is empty"
 }
 
@@ -101,6 +108,9 @@ upload_tree() {
     || die "cannot copy scripts"
   copy_to_service_user "$CONFIG_FILE" "$SERVICE_USER@$SERVER_HOST:.beaut/config.env" \
     || die "cannot copy configuration"
+  copy_to_service_user "$PROJECT_ROOT/config.env.example" \
+    "$SERVICE_USER@$SERVER_HOST:.beaut/config.env.example" \
+    || die "cannot copy the configuration schema"
   as_service_user "find ~/.beaut -type f -name '*.sh' -exec chmod 755 {} +" \
     || die "remote chmod failed"
 }
@@ -116,36 +126,53 @@ init_git_repo() {
 }
 
 # --- 4. HTTP tree: the path mirrors the file --------------------------------
-# /node is published as a self-contained artifact: server address baked in and
-# no sourced files, so `curl .../node | sh` works with zero client files.
+# /node is published as a self-contained artifact rendered ON THE SERVER from
+# the uploaded scripts/node.sh and the deployed config: no local client file is
+# uploaded and `curl .../node | sh` works with zero client files.
 # /join is not published; scripts/wireguard_join.sh stays a repo command.
 publish_tree() {
-  local published_node_artifact
-  published_node_artifact="$(mktemp "${TMPDIR:-/tmp}/beaut-node.XXXXXX")"
-  bash "$SCRIPTS_DIR/build_published_node.sh" "$SERVER_HOST" "$HTTP_PORT" > "$published_node_artifact" \
-    || die "cannot build the published node script"
+  case "$SERVER_HOST" in
+    ''|*[!A-Za-z0-9._:-]*) die "invalid SERVER_HOST: $SERVER_HOST" ;;
+  esac
+  case "$HTTP_PORT" in
+    ''|*[!0-9]*) die "invalid HTTP_PORT: $HTTP_PORT" ;;
+  esac
 
-  as_service_user 'set -e
+  as_service_user "set -e
     cd ~/.beaut
     mkdir -p shared/node
     rm -rf shared/scripts shared/deploy shared/join
     cp -a scripts shared/scripts
     cp -a deploy shared/deploy
-    chmod -R a+rX shared' || die "cannot publish the HTTP tree"
+    bash scripts/build_published_node.sh '$SERVER_HOST' '$HTTP_PORT' > shared/node/DEFAULT.sh
+    chmod -R a+rX shared" || die "cannot publish the HTTP tree"
+}
 
-  copy_to_service_user "$published_node_artifact" \
-    "$SERVICE_USER@$SERVER_HOST:.beaut/shared/node/DEFAULT.sh" \
-    || die "cannot upload the published node script"
-  as_service_user 'chmod a+rX ~/.beaut/shared/node ~/.beaut/shared/node/DEFAULT.sh' \
-    || die "cannot make the published node script readable"
+# Refresh the root-owned privileged copy without re-running bootstrap. The
+# service user already has sudo, so this does not widen its rights; it keeps
+# network.sh/wireguard.sh current between deploys.
+install_privileged_scripts() {
+  as_service_user "sudo -n env SERVICE_HOME=\"\$HOME\" bash ~/.beaut/deploy/files/install_privileged.sh" \
+    || die "cannot refresh the privileged scripts"
+}
 
-  rm -f -- "$published_node_artifact"
+# --- 4b. local identities and the hidden personal tree ----------------------
+initialize_identity() {
+  if [[ "$INSTALL_MODE" == "root" ]]; then
+    as_service_user 'cd ~/.beaut && bash scripts/device.sh init "$(hostname 2>/dev/null || printf server)"' \
+      || die "cannot initialize the server device identity"
+  else
+    log info "no-root mode: skipping the server device identity (no WireGuard)"
+  fi
+  as_service_user 'cd ~/.beaut && bash scripts/svr.sh init' \
+    || die "cannot initialize the personal tree"
 }
 
 # --- 5. privileged resources through the sudo grant -------------------------
 configure_network() {
   as_service_user "if command -v wg >/dev/null 2>&1; then
             sudo -n bash /usr/local/lib/beaut/scripts/network.sh setup || echo 'warning: network not configured' >&2
+            sudo -n bash /usr/local/lib/beaut/scripts/network.sh sync-peers || echo 'warning: peers not synchronized' >&2
           else
             echo 'warning: wireguard missing, network skipped' >&2
           fi" || true
@@ -169,20 +196,28 @@ install_server() {
   has_command scp  || die "scp is required"
   has_command curl || die "curl is required"
 
-  if [[ "$INSTALL_MODE" == "root" ]]; then
+  if [[ "$INSTALL_MODE" == "root" ]] && ! service_user_is_ready; then
     choose_bootstrap_user
     log info "bootstrapping $SERVER_HOST through $BOOTSTRAP_USER, then $SERVICE_USER"
     bootstrap_remote
     verify_key_auth
     log info "key accepted for $SERVICE_USER@$SERVER_HOST"
   else
-    log info "no-root mode: installing $SERVER_HOST as $SERVICE_USER without sudo"
+    if [[ "$INSTALL_MODE" == "root" ]]; then
+      log info "identity detected: $SERVICE_USER@$SERVER_HOST (key + sudo)"
+    else
+      log info "no-root mode: installing $SERVER_HOST as $SERVICE_USER without sudo"
+    fi
     verify_key_auth
   fi
 
   upload_tree
+  if [[ "$INSTALL_MODE" == "root" ]]; then
+    install_privileged_scripts
+  fi
   init_git_repo
   publish_tree
+  initialize_identity
 
   if [[ "$INSTALL_MODE" == "root" ]]; then
     configure_network
