@@ -18,6 +18,11 @@ cat > "$fake_bin/wg" <<'FAKE_WG'
 case "${1:-}" in
   genkey) printf 'PRIVATE-KEY-FIXED\n' ;;
   pubkey) cat >/dev/null; printf 'PUBLIC-KEY-DERIVED\n' ;;
+  set)
+    if [[ -n "${FAKE_WG_STATE:-}" ]]; then
+      printf 'wg %s\n' "$*" >> "$FAKE_WG_STATE"
+    fi
+    ;;
   *) exit 2 ;;
 esac
 FAKE_WG
@@ -69,6 +74,41 @@ assert_equal '10.66.0.0' "$(wireguard_network_base)" "network base"
 assert_equal '10.66.0.' "$(wireguard_address_prefix)" "address prefix"
 assert_equal '10.66.0.4' "$(next_wireguard_node_address)" "next free node address"
 
+# --- stateful ip fake for interface idempotence -----------------------------
+cat > "$fake_bin/ip" <<'FAKE_IP_STATEFUL'
+#!/usr/bin/env bash
+state="${FAKE_IP_STATE:?}"
+printf '%s\n' "$*" >> "$state.commands"
+case "$*" in
+  "-4 address show dev wg0")
+    [[ -f "$state.interface" ]] || exit 1
+    if [[ -f "$state.addresses" ]]; then
+      while IFS= read -r address; do
+        [[ -n "$address" ]] && printf '    inet %s scope global wg0\n' "$address"
+      done < "$state.addresses"
+    fi
+    ;;
+  "link show wg0")
+    [[ -f "$state.interface" ]]
+    ;;
+  "link add wg0 type wireguard")
+    : > "$state.interface"
+    ;;
+  "link del wg0")
+    rm -f "$state.interface" "$state.addresses"
+    ;;
+  "link set wg0 up")
+    : ;;
+  "address add "*)
+    printf '%s\n' "$3" >> "$state.addresses"
+    ;;
+esac
+FAKE_IP_STATEFUL
+chmod 755 "$fake_bin/ip"
+export FAKE_IP_STATE="$sandbox/ip-state"
+export FAKE_WG_STATE="$sandbox/wg-state"
+export SERVER_HOST='127.0.0.1'
+
 # --- key reuse --------------------------------------------------------------
 ensure_wireguard_keys
 first_private="$(cat "$(wireguard_private_key_file)")"
@@ -96,3 +136,32 @@ setup_nat
 setup_nat
 assert_equal '1' "$(wc -l < "$FAKE_NFT_STATE.nat")" "nat chain should converge to 1 rule"
 assert_contains "$(cat "$FAKE_NFT_STATE.nat")" 'oifname != wg0 masquerade' "nat masquerade"
+
+# --- server interface is reused --------------------------------------------
+rm -f "$FAKE_IP_STATE".* "$FAKE_WG_STATE"
+configure_wireguard_server
+server_add_count="$(grep -c '^link add wg0 type wireguard$' "$FAKE_IP_STATE.commands" || true)"
+server_delete_count="$(grep -c '^link del wg0$' "$FAKE_IP_STATE.commands" || true)"
+assert_equal '1' "$server_add_count" "server interface created once"
+assert_contains "$(cat "$FAKE_IP_STATE.addresses")" '10.66.0.1/24' "server address"
+
+configure_wireguard_server
+assert_equal "$server_add_count" \
+  "$(grep -c '^link add wg0 type wireguard$' "$FAKE_IP_STATE.commands" || true)" \
+  "server interface is reused"
+assert_equal "$server_delete_count" \
+  "$(grep -c '^link del wg0$' "$FAKE_IP_STATE.commands" || true)" \
+  "server reuse must not delete wg0"
+
+# --- node interface is reused ----------------------------------------------
+rm -f "$FAKE_IP_STATE".* "$FAKE_WG_STATE"
+join_wireguard 'SERVER-PUBLIC-KEY'
+join_wireguard 'SERVER-PUBLIC-KEY'
+assert_equal '1' \
+  "$(grep -c '^link add wg0 type wireguard$' "$FAKE_IP_STATE.commands" || true)" \
+  "node interface created once"
+assert_equal '1' \
+  "$(grep -c '^address add ' "$FAKE_IP_STATE.commands" || true)" \
+  "node address added once"
+assert_contains "$(cat "$FAKE_IP_STATE.addresses")" '10.66.0.2/24' "node address"
+assert_contains "$(cat "$FAKE_WG_STATE")" 'peer SERVER-PUBLIC-KEY' "peer configured"
