@@ -103,13 +103,19 @@ path is never created on disk; only the registry under `STATE_DIR` holds the
 mapping. Paths are built from a dictionary passphrase plus random hex.
 
 ```bash
-scripts/attribution.sh create secret wg-server "$(cat "$STATE_DIR/wg_public.key")"
+scripts/attribution.sh create secret wg-server 'PUBLIC-KEY-VALUE'
 # -> /v/amber-river-frost-quartz-1a2b3c	<secret>
 scripts/attribution.sh resolve /v/amber-river-frost-quartz-1a2b3c
-scripts/attribution.sh ensure secret wg-server "<new value>"   # reuse identity
+scripts/attribution.sh ensure secret wg-server '<new value>'   # reuse identity
+scripts/attribution.sh ensure service node 'http://host:8080/node'
+scripts/attribution.sh ensure request knock-42 'pending'
+scripts/attribution.sh ensure wg_net server '10.66.0.1'
 scripts/attribution.sh rotate /v/amber-river-frost-quartz-1a2b3c
 scripts/attribution.sh list
 ```
+
+`kind` is free-form (`secret`, `service`, `request`, `wg_net`, ...); `name` is the
+stable identity within that kind.
 
 Configuration: `ATTRIBUTION_DIRECTORY`, `ATTRIBUTION_REGISTRY`,
 `ATTRIBUTION_WORD_COUNT`, `ATTRIBUTION_SECRET_BYTES`,
