@@ -13,7 +13,6 @@
 #   GET  /door          -> default server public key and WireGuard endpoint
 #
 # Static routes (everything else): the URL path mirrors a root directory.
-#   /<hidden>/...       -> $SVR_ROOT/...   (hidden personal tree)
 #   /a/b/c              -> $PUBLISHED_ROOT/a/b/c            (file)
 #   /a/b                -> $PUBLISHED_ROOT/a/b/index.html  (page)
 #                       -> $PUBLISHED_ROOT/a/b/DEFAU*.sh   (script fallback)
@@ -123,10 +122,20 @@ serve_tree() {
   if [[ -z "$target" ]]; then
     not_found; return
   fi
-  # The target must stay inside the served root. A hidden-tree link may also
-  # point into the public tree (for example <hidden>/scripts -> site/scripts).
+  # The target must stay inside the served root, an explicit extra root, or
+  # the configured personal tree root (SVR_NAME symlink target).
   if [[ "$target" != "$real_root" && "$target" != "$real_root"/* ]]; then
-    if [[ -z "$real_extra" || ( "$target" != "$real_extra" && "$target" != "$real_extra"/* ) ]]; then
+    local allowed_extra="$real_extra" svr_real=""
+    if declare -F personal_tree_root >/dev/null 2>&1; then
+      svr_real="$(realpath -m -- "$(personal_tree_root 2>/dev/null)" 2>/dev/null || true)"
+    fi
+    if [[ -z "$allowed_extra" && -n "$svr_real" ]] || [[ -n "$svr_real" && ( "$target" == "$svr_real" || "$target" == "$svr_real"/* ) ]]; then
+      : # allowed via svr root
+    elif [[ -n "$allowed_extra" && ( "$target" == "$allowed_extra" || "$target" == "$allowed_extra"/* ) ]]; then
+      : # allowed
+    elif [[ -n "$svr_real" && ( "$target" == "$svr_real" || "$target" == "$svr_real"/* ) ]]; then
+      :
+    else
       not_found; return
     fi
   fi
@@ -268,8 +277,10 @@ case "$url_path" in
     serve_door
     ;;
   *)
-    if personal_tree_relative_path="$(personal_tree_match_path "$url_path" 2>/dev/null)"; then
-      serve_tree "$personal_tree_relative_path" "$(personal_tree_root)" raw "${PUBLISHED_ROOT:-}"
+    _svr_name=""
+    if declare -F personal_tree_name >/dev/null 2>&1; then _svr_name="$(personal_tree_name 2>/dev/null || true)"; fi
+    if [[ -n "$_svr_name" && ( "$url_path" == "$_svr_name" || "$url_path" == "$_svr_name"/* ) ]]; then
+      serve_tree "$url_path" "${PUBLISHED_ROOT:-}" raw
     else
       serve_tree "$url_path"
     fi

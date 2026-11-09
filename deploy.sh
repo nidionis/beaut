@@ -116,6 +116,9 @@ upload_site() {
   local remote_staging='.beaut/.site-staging'
   local remote_repositories='.beaut/.site-repositories.tsv'
   local -a archive_excludes=()
+  local svr_upload_name=""
+  svr_upload_name="${SVR_NAME:-}"
+  [[ -z "$svr_upload_name" && -s "${STATE_DIR:-$PROJECT_ROOT/state}/svr_name" ]] && svr_upload_name="$(tr -d '[:space:]' < "${STATE_DIR:-$PROJECT_ROOT/state}/svr_name")"
 
   if [[ ! -d "$site_directory" ]]; then
     log info "no site/ directory: leaving the public tree unchanged"
@@ -128,8 +131,13 @@ upload_site() {
 
   for entry in "$site_directory"/*; do
     [[ -e "$entry" ]] || continue
-    [[ -e "$entry/.git" ]] || continue
     name="$(basename -- "$entry")"
+    # Exclude the generated SVR tree link/dir (managed by svr.sh).
+    if [[ -n "$svr_upload_name" && "$name" == "$svr_upload_name" ]]; then
+      archive_excludes+=("--exclude=./$name")
+      continue
+    fi
+    [[ -e "$entry/.git" ]] || continue
     # A worktree has .git as a file (gitdir pointer) - it is the hidden svr tree,
     # generated locally and managed on the server; never upload it.
     if [[ -f "$entry/.git" ]]; then

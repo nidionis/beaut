@@ -229,12 +229,7 @@ journal_remote_resolve() {
       }
       base="${JOURNAL_REMOTE_ROOT:-}"
       if [[ -z "$base" ]]; then
-        # Use the worktree/tree path on the server.
-        if [[ -n "${PUBLISHED_ROOT:-}" ]]; then
-          base="$PUBLISHED_ROOT/$(personal_tree_name 2>/dev/null || basename "$(personal_tree_root)")"
-        else
-          base="${SERVICE_ROOT:-$HOME/.${SERVICE_USER:-beaut}}/site/$(personal_tree_name 2>/dev/null || basename "$(personal_tree_root)")"
-        fi
+        base="$(personal_tree_root 2>/dev/null || echo "${SERVICE_ROOT:-$HOME/.${SERVICE_USER:-beaut}}/.svr")"
       fi
       printf '%s@%s:%s/%s' "$user" "$host" "$base" "$(basename "$root")"
       ;;

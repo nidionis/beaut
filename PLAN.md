@@ -144,22 +144,19 @@ correspondance. Le chemin est une phrase de dictionnaire + suffixe hexadécimal.
 
 ## Arborescence personnelle cachée et journal
 
-- `scripts/svr.sh` gère un worktree git caché : `$SVR_REPO` (`$SERVICE_ROOT/.svr`)
-  est le dépôt séparé, `$PUBLISHED_ROOT/$SVR_NAME` est le worktree dont `.git`
-  est un fichier pointant vers `$SVR_REPO`. `SVR_NAME` (8 alphanum, persisté
-  dans `state/svr_name`) est le nom et le préfixe URL ; `SVR_PATH` peut
-  surcharger l'URL. `svr.sh init` crée le dépôt, le worktree (`admin` + commit
-  initial, `worktree add -B main`) et migre les anciens `.svr-*` / `svr/`.
+- `scripts/svr.sh` gère l'arbre personnel : `SVR_ROOT` (`$SERVICE_ROOT/.svr`,
+  dépôt git séparé) contient les données ; `$PUBLISHED_ROOT/$SVR_NAME` est un
+  lien symbolique vers `SVR_ROOT`. `SVR_NAME` (8 alphanum, persisté dans
+  `state/svr_name`) est le nom et le préfixe URL. `svr.sh init` crée le dépôt,
+  le lien, migre les anciens `svr/` / `.svr-*` / worktrees, et lie `scripts`.
 - `SVR_PATH` fixe explicitement le préfixe URL caché (aléatoire par défaut).
   `SVR_MODE=random` : 8 caractères `[a-z0-9]`, persistés dans
   `state/svr_path` (mode 600). `sha` : 8 premiers caractères de
   `sha256("beaut-svr:" + SVR_SECRET)`. `plain` : valeur `SVR` explicite.
-- L'HTTP sert `/<secret>/…` depuis le worktree `$PUBLISHED_ROOT/$SVR_NAME` ;
-  un préfixe erroné ne donne jamais accès à l'arbre, et les segments commençant
-  par un point (`.git`, y compris le fichier `.git` du worktree) restent privés.
-- `svr.sh init` crée le worktree et lie `$PUBLISHED_ROOT/<secret>/scripts` ->
-  `$PUBLISHED_ROOT/scripts`. Le handler autorise cette cible publique, donc
-  `/<secret>/scripts/` sert les mêmes scripts que `/scripts/`, qui reste public.
+- L'HTTP sert `/$SVR_NAME/…` via le lien symbolique vers `SVR_ROOT` ; les
+  segments commençant par un point (`.git`) restent privés. Le handler autorise
+  les cibles sous `SVR_ROOT` et sert les scripts via le lien `$SVR_ROOT/scripts`
+  -> `$PUBLISHED_ROOT/scripts` ; `/scripts/` reste public.
 - `scripts/lib/journal.sh` est un portage de `~/.svr/usr/bin/journal` :
   `$SVR_ROOT/journal/YYYY/MM/DD/<sous-dossier>/<nom>.md`, en-tête
   (AAMMJJ, heure, utilisateur, hôte, séparateur, chemin), vue
@@ -221,7 +218,7 @@ site/scripts/lib/devices.sh      registre, clés, adresses, trust, porte
 site/scripts/lib/invites.sh      invitations passMessage hachées (usages/TTL/révocation)
 site/scripts/svr.sh              CLI worktree .svr, journal git et installeur
 site/scripts/journal_cli.sh      commande installée journal / journal-perso
-site/scripts/lib/personal_tree.sh  dépôt .svr, worktree $SVR_NAME, chemins secrets et lien scripts
+site/scripts/lib/personal_tree.sh  SVR_NAME, lien symbolique, SVR_ROOT git et scripts
 site/scripts/lib/journal.sh      journal compatible ~/.svr : arbre daté, vue hôte, git
 site/scripts/lib/passphrase.sh   mots, aléa, passphrases, secrets
 site/scripts/attribution.sh      CLI d'attribution virtuelle (secrets/chemins)

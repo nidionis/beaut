@@ -101,7 +101,7 @@ if [[ -d "$PUBLISHED_ROOT" ]]; then
     pname="$(basename -- "$preserved")"
     [[ -e "$new_root/$pname" ]] && continue
     # Worktrees have .git as a file; also preserve if SVR_NAME/path matches.
-    if [[ -f "$preserved/.git" ]] || [[ -n "$_svr_keep" && "$pname" == "$_svr_keep" ]]; then
+    if [[ -f "$preserved/.git" ]] || [[ -L "$preserved" && -n "$_svr_keep" && "$pname" == "$_svr_keep" ]] || [[ -n "$_svr_keep" && "$pname" == "$_svr_keep" ]]; then
       mv -- "$preserved" "$new_root/$pname"
       # Repair worktree back-pointer after the path change.
       if [[ -f "$new_root/$pname/.git" ]] && command -v git >/dev/null 2>&1; then
