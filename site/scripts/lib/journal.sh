@@ -216,6 +216,7 @@ journal_write_text() {
     printf 'journal entry text is required\n' >&2
     return 1
   }
+  journal_initialize_root "$root" "${JOURNAL_REMOTE:-}" || return 1
   text="${text//$'\n'/ }"
   text="${text//$'\t'/ }"
   relative="$(journal_relative_path "$subfolder" "$name")" || return 1
@@ -279,11 +280,17 @@ journal_open_at() {
 }
 
 journal_open() {
-  journal_open_at "$(journal_root)" "${JOURNAL_SUBFOLDER:-notes}" "$@"
+  local root
+  root="$(journal_root)" || return 1
+  journal_initialize_root "$root" "${JOURNAL_REMOTE:-}" || return 1
+  journal_open_at "$root" "${JOURNAL_SUBFOLDER:-notes}" "$@"
 }
 
 journal_perso_open() {
-  journal_open_at "$(journal_perso_root)" "${PERSO_SUBFOLDER:-fouretout}" "$@"
+  local root
+  root="$(journal_perso_root)" || return 1
+  journal_initialize_root "$root" "${PERSO_REMOTE:-}" || return 1
+  journal_open_at "$root" "${PERSO_SUBFOLDER:-fouretout}" "$@"
 }
 
 # --- listing and index ----------------------------------------------------

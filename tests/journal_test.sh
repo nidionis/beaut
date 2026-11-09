@@ -134,3 +134,12 @@ assert_file_exists "$cli_root/2026/07/01/notes/memo.md" \
   "installed journal writes the reference layout"
 assert_contains "$(cat "$cli_root/2026/07/01/notes/memo.md")" \
   'from the installed command' "installed journal entry"
+
+# A fresh root is initialized as a git repository on first use.
+cli_git_root="$sandbox/cli-git-journal"
+JOURNAL_ROOT="$cli_git_root" JOURNAL_GIT='1' JOURNAL_TEXT='git from the command' \
+  JOURNAL_DATE='2026-07-02' JOURNAL_TIME='12:00:00' \
+  "$SVR_BIN_DIR/journal" memo >/dev/null
+assert_file_exists "$cli_git_root/.git/HEAD" "installed journal initializes git"
+assert_contains "$(git -C "$cli_git_root" log -1 --format=%s)" \
+  'journal: 2026/07/02/notes/memo.md' "installed journal commits"

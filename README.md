@@ -236,7 +236,8 @@ $SVR_ROOT/journal/index.html                     (generated index)
 Each new file starts with the reference header (YYMMDD, time, user, host,
 separator, relative path). `journal` pulls before editing, opens
 `JOURNAL_EDITOR` (default `$EDITOR`), then commits and pushes when the folder is
-a git repository. `JOURNAL_GIT=0` disables git. `JOURNAL_REMOTE` (or
+a git repository. A missing root is initialized (and git-initialized) on first
+use. `JOURNAL_GIT=0` disables git. `JOURNAL_REMOTE` (or
 `svr.sh remote <url>`) sets `origin`; re-run it after a restore to point a
 recovered server at the new address. `journal-perso` behaves the same in
 `$SVR_ROOT/perso` with the `fouretout` default subfolder.
