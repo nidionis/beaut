@@ -32,6 +32,10 @@ load_config
 STATE_DB="$STATE_DIR/db.tsv"
 state_init
 
+not_found() {
+  http_send_response 404 "${NOT_FOUND_BODY:-404}"
+}
+
 # --- daily archive of a result ----------------------------------------------
 archive_result() {
   local token="$1" result="$2"
@@ -39,9 +43,11 @@ archive_result() {
   local archive_dir="$STATE_DIR/archive/$day"
   mkdir -p "$archive_dir"
 
-  local total_kb available_kb memory_threshold_kb
-  total_kb="$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
-  available_kb="$(awk '/MemAvailable/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+  local total_kb=0 available_kb=0 memory_threshold_kb
+  read -r total_kb available_kb < <(
+    awk '/MemTotal/{total=$2} /MemAvailable/{available=$2} END{print total+0, available+0}' \
+      /proc/meminfo 2>/dev/null
+  )
   memory_threshold_kb=$(( total_kb / ARCHIVE_MEMORY_DIVISOR ))
   if [[ "$available_kb" -le "$memory_threshold_kb" ]]; then
     log warn "archive skipped: available RAM=${available_kb}KB <= threshold=${memory_threshold_kb}KB"
@@ -50,18 +56,15 @@ archive_result() {
 
   local timestamp; timestamp="$(date +%s)"
   local node_name; node_name="$(hostname 2>/dev/null || echo unknown)"
-  printf 'archive\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$day" "$token" "$node_name" "$result" "$timestamp" "" "" >> "$STATE_DB"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$token" "$node_name" "$result" "$timestamp" >> "$archive_dir/results.tsv"
+  state_append "$STATE_DB" archive "$day" "$token" "$node_name" "$result" "$timestamp" "" ""
+  state_append "$archive_dir/results.tsv" "$token" "$node_name" "$result" "$timestamp" "" "" "" ""
 }
 
 # --- static tree ------------------------------------------------------------
 # A directory prefers a real index page; DEFAU*.sh remains the script default.
 find_default_file() {
   local directory="$1" candidate
-  for candidate in "$directory/index.html" "$directory/index.htm"; do
-    if [[ -f "$candidate" ]]; then printf '%s' "$candidate"; return 0; fi
-  done
-  for candidate in "$directory"/DEFAU*.sh; do
+  for candidate in "$directory/index.html" "$directory/index.htm" "$directory"/DEFAU*.sh; do
     if [[ -f "$candidate" ]]; then printf '%s' "$candidate"; return 0; fi
   done
   return 1
@@ -70,44 +73,64 @@ find_default_file() {
 # Reject any path with a dot-prefixed segment: hidden files and `.git` must not
 # be reachable over HTTP, even inside a site repository.
 path_has_hidden_segment() {
-  case "/${1:-}/" in
-    */.*) return 0 ;;
-    *)    return 1 ;;
-  esac
+  [[ "/${1:-}/" == */.* ]]
+}
+
+# Browse a directory that has neither an index page nor a DEFAULT script.
+serve_directory_index() {
+  local directory="$1" request_path="$2"
+  local body entry name suffix
+  body='<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Index of /'"$(http_html_escape "$request_path")"'</title>
+<link rel="stylesheet" href="/style.css">
+</head><body><main>
+<h1>Index of /'"$(http_html_escape "$request_path")"'</h1>
+<ul>'
+  [[ -z "$request_path" ]] || body+='<li><a href="../">../</a></li>'
+  while IFS= read -r -d '' entry; do
+    name="${entry##*/}"
+    [[ "$name" == .* ]] && continue
+    suffix=""
+    [[ -d "$entry" ]] && suffix="/"
+    body+='<li><a href="'"$(http_html_escape "$name")$suffix"'">'"$(http_html_escape "$name")$suffix"'</a></li>'
+  done < <(find "$directory" -mindepth 1 -maxdepth 1 -print0 | LC_ALL=C sort -z)
+  body+='</ul>
+</main></body></html>'
+  http_send_body 200 'text/html; charset=utf-8' "$body"
 }
 
 serve_tree() {
   local requested_path="$1" root_directory="${2:-${PUBLISHED_ROOT:-}}"
-  local root_dir real_root target
-  root_dir="$root_directory"
-  if [[ -z "$root_dir" || ! -d "$root_dir" ]]; then
-    http_send_response 404 "${NOT_FOUND_BODY:-404}"; return
+  local serve_mode="${3:-render}" real_root target directory
+  if [[ -z "$root_directory" || ! -d "$root_directory" ]]; then
+    not_found; return
   fi
-  real_root="$(realpath -m -- "$root_dir" 2>/dev/null || printf '%s' "$root_dir")"
+  real_root="$(realpath -m -- "$root_directory" 2>/dev/null || printf '%s' "$root_directory")"
 
   case "$requested_path" in
-    *..*|*\\*)
-      http_send_response 404 "${NOT_FOUND_BODY:-404}"; return
-      ;;
+    *..*|*\\*) not_found; return ;;
   esac
-  if path_has_hidden_segment "$requested_path"; then
-    http_send_response 404 "${NOT_FOUND_BODY:-404}"; return
-  fi
+  path_has_hidden_segment "$requested_path" && { not_found; return; }
 
-  target="$(realpath -m -- "$root_dir/$requested_path" 2>/dev/null || true)"
+  target="$(realpath -m -- "$root_directory/$requested_path" 2>/dev/null || true)"
   if [[ -z "$target" || ( "$target" != "$real_root" && "$target" != "$real_root"/* ) ]]; then
-    http_send_response 404 "${NOT_FOUND_BODY:-404}"; return
+    not_found; return
   fi
 
   if [[ -d "$target" ]]; then
-    target="$(find_default_file "$target")" \
-      || { http_send_response 404 "${NOT_FOUND_BODY:-404}"; return; }
+    directory="$target"
+    if ! target="$(find_default_file "$directory")"; then
+      serve_directory_index "$directory" "$requested_path"
+      return
+    fi
   fi
 
   if [[ -f "$target" ]]; then
-    http_send_file "$target"
+    http_send_file "$target" "$serve_mode"
   else
-    http_send_response 404 "${NOT_FOUND_BODY:-404}"
+    not_found
   fi
 }
 
@@ -123,9 +146,7 @@ device_name_sanitize() {
 }
 
 enroll_device() {
-  local public_key device_name pass_message name existing trust status
-  local invite_row invite_id device_id address response
-
+  local public_key device_name pass_message response
   public_key="$(http_get_form_param public_key || true)"
   device_name="$(http_get_form_param device_name || true)"
   pass_message="$(http_get_form_param pass_message || true)"
@@ -136,51 +157,19 @@ enroll_device() {
   if ! device_validate_public_key "$public_key"; then
     http_send_response 400 "invalid public_key"; return
   fi
-  name="$(device_name_sanitize "$device_name")"
 
-  existing="$(device_find_by_public_key "$public_key" || true)"
-  if [[ -n "$existing" ]]; then
-    device_id="$(printf '%s' "$existing" | cut -f1)"
-    status="$(printf '%s' "$existing" | cut -f6)"
-    trust="$(printf '%s' "$existing" | cut -f5)"
-    address="$(printf '%s' "$existing" | cut -f4)"
-    http_send_response 200 "$(printf 'device_id=%s\nstatus=%s\ntrust=%s\naddress=%s' \
-      "$device_id" "$status" "$trust" "$address")"
-    return
-  fi
-
-  trust="guest"
-  status="pending"
-  if [[ -n "$pass_message" ]]; then
-    invite_row="$(invite_find_usable_by_secret_hash "$(invite_hash_secret "$pass_message")" || true)"
-    if [[ -n "$invite_row" ]]; then
-      invite_id="$(printf '%s' "$invite_row" | cut -f1)"
-      trust="$(printf '%s' "$invite_row" | cut -f2)"
-      status="approved"
-    fi
-  fi
-
-  device_id="$(device_add "$name" "$public_key" "$trust" "$status")" || {
+  response="$(device_enroll "$(device_name_sanitize "$device_name")" "$public_key" "$pass_message")" || {
     http_send_response 400 "cannot enroll device"
     return
   }
-  if [[ -n "${invite_id:-}" ]]; then
-    invite_consume "$invite_id" || true
-  fi
-  address="$(device_field "$device_id" 4)"
-  http_send_response 200 "$(printf 'device_id=%s\nstatus=%s\ntrust=%s\naddress=%s' \
-    "$device_id" "$status" "$trust" "$address")"
+  http_send_response 200 "$response"
 }
 
 serve_device_status() {
-  local device_id="$1" row
-  row="$(device_find "$device_id")" || {
-    http_send_response 404 "${NOT_FOUND_BODY:-404}"; return
-  }
-  [[ -n "$row" ]] || { http_send_response 404 "${NOT_FOUND_BODY:-404}"; return; }
-  http_send_response 200 "$(printf 'device_id=%s\nstatus=%s\ntrust=%s\naddress=%s' \
-    "$device_id" "$(printf '%s' "$row" | cut -f6)" \
-    "$(printf '%s' "$row" | cut -f5)" "$(printf '%s' "$row" | cut -f4)")"
+  local row
+  row="$(device_find "$1")" || { not_found; return; }
+  [[ -n "$row" ]] || { not_found; return; }
+  http_send_response 200 "$(device_print_response "$row")"
 }
 
 serve_door() {
@@ -194,8 +183,8 @@ serve_door() {
     http_send_response 404 "no approved door"; return
   }
   http_send_response 200 "$(printf 'public_key=%s\nendpoint=%s:%s\nnetwork=%s\nserver_address=%s' \
-    "$(printf '%s' "$row" | cut -f3)" "$SERVER_HOST" "$WG_PORT" "$WG_NETWORK" \
-    "$(printf '%s' "$row" | cut -f4)")"
+    "$(state_field "$row" 3)" "$SERVER_HOST" "$WG_PORT" "$WG_NETWORK" \
+    "$(state_field "$row" 4)")"
 }
 
 # --- routing ----------------------------------------------------------------
@@ -208,12 +197,13 @@ case "$url_path" in
     ;;
   work/*)
     token="${url_path#work/}"
-    if [[ -z "$(token_find "$token")" ]]; then
-      http_send_response 404 "${NOT_FOUND_BODY:-404}"
+    token_row="$(token_find "$token")"
+    if [[ -z "$token_row" ]]; then
+      not_found
     else
-      task_command="$(token_field "$token" 3)"
-      token_status="$(token_field "$token" 4)"
-      token_created_at="$(token_field "$token" 5)"
+      task_command="$(state_field "$token_row" 3)"
+      token_status="$(state_field "$token_row" 4)"
+      token_created_at="$(state_field "$token_row" 5)"
       if [[ "$token_status" == "pending" || "$token_status" == "" ]]; then
         now_seconds="$(date +%s)"
         if (( now_seconds - token_created_at > TOKEN_TTL_SECONDS )); then
@@ -232,7 +222,7 @@ case "$url_path" in
     if [[ -z "$token" ]]; then
       http_send_response 400 "missing token"
     elif [[ -z "$(token_find "$token")" ]]; then
-      http_send_response 404 "${NOT_FOUND_BODY:-404}"
+      not_found
     else
       archive_result "$token" "$request_body"
       state_update "$STATE_DIR/db.tsv" 4 "done" 2 "$token"
@@ -267,7 +257,7 @@ case "$url_path" in
     ;;
   *)
     if personal_tree_relative_path="$(personal_tree_match_path "$url_path" 2>/dev/null)"; then
-      serve_tree "$personal_tree_relative_path" "$(personal_tree_root)"
+      serve_tree "$personal_tree_relative_path" "$(personal_tree_root)" raw
     else
       serve_tree "$url_path"
     fi

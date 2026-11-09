@@ -25,6 +25,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib/core.sh"
 . "$SCRIPT_DIR/lib/devices.sh"
 . "$SCRIPT_DIR/lib/invites.sh"
+. "$SCRIPT_DIR/lib/http.sh"
 load_config
 
 usage() {
@@ -33,26 +34,22 @@ usage() {
 }
 
 device_http_get() {
-  local path="$1" response_file
-  response_file="$(mktemp)"
-  DEVICE_HTTP_STATUS="$(curl -s -o "$response_file" -w '%{http_code}' \
-    "http://$SERVER_HOST:$HTTP_PORT$path")"
-  DEVICE_HTTP_BODY="$(cat "$response_file")"
-  rm -f -- "$response_file"
+  http_request GET "$1"
+  DEVICE_HTTP_STATUS="$http_status"
+  DEVICE_HTTP_BODY="$http_body"
 }
 
 device_http_post_fields() {
   local path="$1"; shift
-  local response_file field
+  local field
   local -a curl_fields=()
   for field in "$@"; do
     curl_fields+=(--data-urlencode "$field")
   done
-  response_file="$(mktemp)"
-  DEVICE_HTTP_STATUS="$(curl -s -o "$response_file" -w '%{http_code}' \
-    "${curl_fields[@]}" "http://$SERVER_HOST:$HTTP_PORT$path")"
-  DEVICE_HTTP_BODY="$(cat "$response_file")"
-  rm -f -- "$response_file"
+  http_request POST "$path" \
+    -H 'Content-Type: application/x-www-form-urlencoded' "${curl_fields[@]}"
+  DEVICE_HTTP_STATUS="$http_status"
+  DEVICE_HTTP_BODY="$http_body"
 }
 
 device_response_field() {
@@ -77,8 +74,8 @@ device_require_http_ok() {
 }
 
 device_signin() {
-  local pass_message="${1:-}" device_id name public_key
-  device_id="$(device_local_identity_initialize "$(hostname 2>/dev/null || printf 'device')")" \
+  local pass_message="${1:-}" name public_key
+  device_local_identity_initialize "$(hostname 2>/dev/null || printf 'device')" >/dev/null \
     || return 1
   name="$(device_local_name 2>/dev/null || printf 'device')"
   public_key="$(device_local_public_key)" || return 1
@@ -90,46 +87,20 @@ device_signin() {
   printf '%s' "$DEVICE_HTTP_BODY"
 }
 
-# Bring the live interface in line with the registry after a manual decision.
-# Best effort: a client without wg0 or sudo simply skips it.
-device_refresh_peers() {
+device_run_network() {
   if [[ "$(id -u)" -eq 0 ]]; then
-    bash "$SCRIPT_DIR/network.sh" sync-peers >/dev/null 2>&1 || true
+    bash "$SCRIPT_DIR/network.sh" "$@"
   elif sudo -n true 2>/dev/null; then
-    sudo -n bash "$SCRIPT_DIR/network.sh" sync-peers >/dev/null 2>&1 || true
+    sudo -n bash "$SCRIPT_DIR/network.sh" "$@"
+  else
+    return 1
   fi
 }
 
-device_register_request() {
-  local public_key="${1:?missing public key}" name="${2:-device}" pass_message="${3:-}"
-  local existing row trust="guest" status="pending" invite_row invite_id device_id
-  device_validate_public_key "$public_key" || {
-    printf 'invalid WireGuard public key\n' >&2
-    return 1
-  }
-  existing="$(device_find_by_public_key "$public_key" || true)"
-  if [[ -n "$existing" ]]; then
-    printf 'device_id=%s\nstatus=%s\ntrust=%s\naddress=%s\n' \
-      "$(printf '%s' "$existing" | cut -f1)" \
-      "$(printf '%s' "$existing" | cut -f6)" \
-      "$(printf '%s' "$existing" | cut -f5)" \
-      "$(printf '%s' "$existing" | cut -f4)"
-    return 0
-  fi
-  if [[ -n "$pass_message" ]]; then
-    invite_row="$(invite_find_usable_by_secret_hash "$(invite_hash_secret "$pass_message")" || true)"
-    if [[ -n "$invite_row" ]]; then
-      invite_id="$(printf '%s' "$invite_row" | cut -f1)"
-      trust="$(printf '%s' "$invite_row" | cut -f2)"
-      status="approved"
-    fi
-  fi
-  device_id="$(device_add "$name" "$public_key" "$trust" "$status")" || return 1
-  if [[ -n "${invite_id:-}" ]]; then
-    invite_consume "$invite_id" || true
-  fi
-  printf 'device_id=%s\nstatus=%s\ntrust=%s\naddress=%s\n' \
-    "$device_id" "$status" "$trust" "$(device_field "$device_id" 4)"
+# Bring the live interface in line with the registry after a manual decision.
+# Best effort: a client without wg0 or sudo simply skips it.
+device_refresh_peers() {
+  device_run_network sync-peers >/dev/null 2>&1 || true
 }
 
 device_invite_command() {
@@ -137,21 +108,15 @@ device_invite_command() {
   local ttl_seconds="${INVITE_TTL_SECONDS:-86400}" note=""
   while (( $# > 0 )); do
     case "$1" in
-      --trust)
-        [[ $# -ge 2 ]] || { printf 'missing value for --trust\n' >&2; return 2; }
-        trust="${2:-}"; shift 2
-        ;;
-      --uses)
-        [[ $# -ge 2 ]] || { printf 'missing value for --uses\n' >&2; return 2; }
-        max_uses="${2:-}"; shift 2
-        ;;
-      --ttl)
-        [[ $# -ge 2 ]] || { printf 'missing value for --ttl\n' >&2; return 2; }
-        ttl_seconds="${2:-}"; shift 2
-        ;;
-      --note)
-        [[ $# -ge 2 ]] || { printf 'missing value for --note\n' >&2; return 2; }
-        note="${2:-}"; shift 2
+      --trust|--uses|--ttl|--note)
+        [[ $# -ge 2 ]] || { printf 'missing value for %s\n' "$1" >&2; return 2; }
+        case "$1" in
+          --trust) trust="$2" ;;
+          --uses)  max_uses="$2" ;;
+          --ttl)   ttl_seconds="$2" ;;
+          --note)  note="$2" ;;
+        esac
+        shift 2
         ;;
       *) printf 'unknown invite option: %s\n' "$1" >&2; return 2 ;;
     esac
@@ -167,8 +132,6 @@ device_invite_command() {
 device_join() {
   local pass_message="${1:-}" response status device_id address door_response
   local server_public_key network endpoint
-  device_local_identity_initialize "$(hostname 2>/dev/null || printf 'device')" >/dev/null \
-    || return 1
   response="$(device_signin "$pass_message")" || return 1
   status="$(device_response_field "$response" status || true)"
   device_id="$(device_response_field "$response" device_id || true)"
@@ -227,7 +190,7 @@ case "$command" in
     invite_list
     ;;
   request)
-    device_register_request "$@"
+    device_enroll "${2:-device}" "${1:?missing public key}" "${3:-}"
     ;;
   approve)
     device_id="${1:?missing device id}"
@@ -271,14 +234,10 @@ case "$command" in
     device_join "${1:-}"
     ;;
   sync-peers)
-    if [[ "$(id -u)" -eq 0 ]]; then
-      sync_wireguard_peers
-    elif sudo -n true 2>/dev/null; then
-      sudo -n bash "$SCRIPT_DIR/network.sh" sync-peers
-    else
+    device_run_network sync-peers || {
       printf 'sync-peers requires root (or passwordless sudo)\n' >&2
       exit 1
-    fi
+    }
     ;;
   *)
     usage

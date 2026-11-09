@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# site_test.sh — public site sync: plain entries mirrored with pruning,
-# reserved names rejected, and git-backed folders cloned then pulled.
+# site_test.sh — public site sync: complete tree replacement, reserved names,
+# and git-backed folders cloned then fast-forwarded.
 set -euo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,57 +11,46 @@ sandbox="$(mktemp -d)"
 trap 'rm -rf -- "$sandbox"' EXIT
 
 site_source="$sandbox/site"
-published_root="$sandbox/shared"
-state_directory="$sandbox/state"
+published_root="$sandbox/site-published"
 repository_list="$sandbox/repositories.tsv"
-mkdir -p "$site_source/hello" "$published_root" "$state_directory"
+mkdir -p "$site_source/hello" "$site_source/scripts" "$published_root"
 : > "$repository_list"
 
 printf '<!doctype html>\n<p>home</p>\n' > "$site_source/index.html"
 printf '#!/bin/sh\necho hello\n' > "$site_source/hello/DEFAULT.sh"
+printf '#!/bin/sh\n' > "$site_source/scripts/DEFAULT.sh"
 printf 'body { color: red; }\n' > "$site_source/style.css"
 printf 'node_modules\n' > "$site_source/.gitignore"
 
 run_sync() {
-  PUBLISHED_ROOT="$published_root" STATE_DIR="$state_directory" LOG_LEVEL=error \
-    bash "$PROJECT_ROOT/deploy/files/sync_site.sh" "$site_source" "$repository_list"
+  PUBLISHED_ROOT="$published_root" LOG_LEVEL=error \
+    bash "$PROJECT_ROOT/site/deploy/files/sync_site.sh" "${1:-$site_source}" "$repository_list"
 }
 
 # --- plain entries ----------------------------------------------------------
 run_sync
 assert_file_exists "$published_root/index.html" "site home is deployed"
 assert_file_exists "$published_root/hello/DEFAULT.sh" "site directory is deployed"
+assert_file_exists "$published_root/scripts/DEFAULT.sh" "builtins are part of the site"
 assert_file_exists "$published_root/style.css" "site file is deployed"
 assert_equal "body { color: red; }" "$(cat "$published_root/style.css")" "site file content"
 assert_file_missing "$published_root/.gitignore" "dot-prefixed entries stay private"
 
-manifest="$(cat "$state_directory/site_manifest")"
-assert_contains "$manifest" 'index.html' "manifest lists the home"
-assert_contains "$manifest" 'hello' "manifest lists the directory"
-assert_contains "$manifest" 'style.css' "manifest lists the file"
-assert_equal '600' "$(stat -c '%a' "$state_directory/site_manifest")" "manifest is private"
-
-# --- removal from site/ prunes the previously managed entry -----------------
+# --- the whole tree is replaced, so nothing stale survives -------------------
+printf 'stale\n' > "$published_root/stale.txt"
 rm -f "$site_source/style.css"
 run_sync
 assert_file_missing "$published_root/style.css" "removed site file is pruned"
+assert_file_missing "$published_root/stale.txt" "unmanaged file is pruned"
 assert_file_exists "$published_root/hello/DEFAULT.sh" "other entries survive"
 
 # --- reserved and invalid names ---------------------------------------------
-mkdir -p "$sandbox/bad-site/scripts"
-printf '#!/bin/sh\n' > "$sandbox/bad-site/scripts/DEFAULT.sh"
-run_sync_bad() {
-  PUBLISHED_ROOT="$published_root" STATE_DIR="$state_directory" LOG_LEVEL=error \
-    bash "$PROJECT_ROOT/deploy/files/sync_site.sh" "$sandbox/bad-site" "$repository_list"
-}
-assert_failure "reserved generated name is rejected" run_sync_bad
+mkdir -p "$sandbox/bad-site/node"
+printf '#!/bin/sh\n' > "$sandbox/bad-site/node/DEFAULT.sh"
+assert_failure "generated node name is rejected" run_sync "$sandbox/bad-site"
 
 mkdir -p "$sandbox/invalid-site/bad name"
-run_sync_invalid() {
-  PUBLISHED_ROOT="$published_root" STATE_DIR="$state_directory" LOG_LEVEL=error \
-    bash "$PROJECT_ROOT/deploy/files/sync_site.sh" "$sandbox/invalid-site" "$repository_list"
-}
-assert_failure "invalid site name is rejected" run_sync_invalid
+assert_failure "invalid site name is rejected" run_sync "$sandbox/invalid-site"
 
 # --- git-backed folder ------------------------------------------------------
 if command -v git >/dev/null 2>&1; then

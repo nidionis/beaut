@@ -12,17 +12,23 @@ trap 'server_stop; rm -rf -- "$sandbox"' EXIT
 published_root="$sandbox/shared"
 state_directory="$sandbox/state"
 mkdir -p "$published_root/docs" "$published_root/data" "$published_root/assets" \
-  "$published_root/legacy" "$published_root/repo/.git"
+  "$published_root/legacy" "$published_root/repo/.git" "$published_root/tree/sub"
 printf '<!doctype html>\n<p>fixture-home</p>\n' > "$published_root/index.html"
 printf '<!doctype html>\n<p>fixture-index</p>\n' > "$published_root/docs/index.html"
 printf '#!/bin/sh\necho fixture-default\n' > "$published_root/docs/DEFAULT.sh"
 printf 'body { color: red; }\n' > "$published_root/assets/site.css"
 printf '# notes\n' > "$published_root/assets/note.md"
+printf 'host={{SERVER_HOST}} port={{HTTP_PORT}}\n' > "$published_root/assets/info.html"
+printf 'raw {{SERVER_HOST}}\n' > "$published_root/assets/raw.txt"
 printf '#!/bin/sh\necho fixture-legacy\n' > "$published_root/legacy/DEFAULT.sh"
 printf 'secret-token\n' > "$published_root/repo/.git/config"
 printf 'id\tvalue\n1\tone\n' > "$published_root/data/table.tsv"
+printf 'alpha\n' > "$published_root/tree/alpha.txt"
+printf 'private\n' > "$published_root/tree/.secret"
 
 export TOKEN_TTL_SECONDS=300
+export SERVER_HOST='fixture.example'
+export HTTP_PORT='9090'
 server_start "$published_root" "$state_directory"
 
 # --- token lifecycle --------------------------------------------------------
@@ -88,6 +94,23 @@ assert_equal 'text/css; charset=utf-8' "$HTTP_CONTENT_TYPE" "stylesheet content 
 http_get /assets/note.md
 assert_status 200 "$HTTP_STATUS" "markdown should be served"
 assert_equal 'text/markdown; charset=utf-8' "$HTTP_CONTENT_TYPE" "markdown content type"
+
+http_get /assets/info.html
+assert_status 200 "$HTTP_STATUS" "template page should be served"
+assert_contains "$HTTP_BODY" 'host=fixture.example port=9090' "configuration variables are rendered"
+assert_not_contains "$HTTP_BODY" '{{' "placeholders are replaced"
+
+http_get /assets/raw.txt
+assert_status 200 "$HTTP_STATUS" "plain text should be served"
+assert_equal 'raw {{SERVER_HOST}}' "$HTTP_BODY" "plain text stays byte-exact"
+
+http_get /tree
+assert_status 200 "$HTTP_STATUS" "directory without index or DEFAULT should list"
+assert_equal 'text/html; charset=utf-8' "$HTTP_CONTENT_TYPE" "listing content type"
+assert_contains "$HTTP_BODY" 'alpha.txt' "listing shows files"
+assert_contains "$HTTP_BODY" 'sub/' "listing marks subdirectories"
+assert_contains "$HTTP_BODY" '../' "listing links to the parent"
+assert_not_contains "$HTTP_BODY" '.secret' "listing hides dotfiles"
 
 http_get /repo/.git/config
 assert_status 404 "$HTTP_STATUS" "dot-prefixed segment should be private"

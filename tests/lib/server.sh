@@ -29,7 +29,7 @@ server_port_is_free() {
 
 server_pick_free_port() {
   local port=18080 attempt
-  for attempt in $(seq 1 200); do
+  for attempt in {1..200}; do
     if server_port_is_free "$port"; then
       printf '%s' "$port"
       return 0
@@ -60,7 +60,7 @@ server_start() {
   SERVER_PID=$!
   printf '%s\n' "$SERVER_PID" > "$SERVER_PID_FILE"
 
-  for attempt in $(seq 1 100); do
+  for attempt in {1..100}; do
     if ! kill -0 "$SERVER_PID" 2>/dev/null; then
       printf 'server exited before becoming ready; log follows:\n' >&2
       cat "$SERVER_LOG" >&2 || true
@@ -86,15 +86,17 @@ server_stop() {
 }
 
 # http_capture <response_file> <curl arguments...>: sets HTTP_STATUS,
-# HTTP_CONTENT_TYPE and HTTP_BODY.
+# HTTP_CONTENT_TYPE, HTTP_LOCATION and HTTP_BODY.
 http_capture() {
   local response_file="$1"; shift
-  local metadata
-  metadata="$(curl -s -o "$response_file" -w '%{http_code}\n%{content_type}' "$@")"
+  local metadata headers_file
+  headers_file="$(mktemp)"
+  metadata="$(curl -s -D "$headers_file" -o "$response_file" -w '%{http_code}\n%{content_type}' "$@")"
   HTTP_STATUS="${metadata%%$'\n'*}"
   HTTP_CONTENT_TYPE="${metadata#*$'\n'}"
+  HTTP_LOCATION="$(awk 'tolower($1) == "location:" { print $2 }' "$headers_file" | tr -d '\r' | tail -n 1)"
   HTTP_BODY="$(cat "$response_file")"
-  rm -f -- "$response_file"
+  rm -f -- "$response_file" "$headers_file"
 }
 
 # http_get <path>: sets HTTP_STATUS, HTTP_CONTENT_TYPE and HTTP_BODY.

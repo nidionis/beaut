@@ -31,12 +31,12 @@ because some systems mount `/tmp` `noexec`.
 | `lib/server.sh` | compile and run the C relay on loopback, isolated roots |
 | `handler_test.sh` | token lifecycle, `/done`, `/get`, static tree, index.html, MIME, hidden paths, 404, traversal, TTL |
 | `served_node_test.sh` | `curl /node \| sh` from an empty directory, `/join` unpublished |
-| `site_test.sh` | `site/` mirror, manifest pruning, reserved names, git clone/pull |
+| `site_test.sh` | complete `site/` replacement, reserved names, git clone/pull |
+| `svr_test.sh` | hidden directory and URL path modes, journal under the secret prefix, migration, CLI install |
 | `device_test.sh` | device registry, key reuse, addresses, approval, door, CLI |
 | `invite_test.sh` | hashed passMessage, uses, expiry, revocation |
 | `signin_test.sh` | `/signin`, invite auto-accept, `/signin/<id>`, `/door`, URL decoding |
-| `svr_test.sh` | random/sha/plain hidden paths, persistence, hidden-tree HTTP |
-| `journal_test.sh` | Markdown journal appends, dates, listing |
+| `journal_test.sh` | reference layout (YYYY/MM/DD), header, host view, git commits, installed command |
 | `deploy_publish_test.sh` | server-rendered node artifact and deploy wiring |
 | `virtual_path_test.sh` | create/ensure/resolve/rotate/remove, uniqueness, custom dictionary |
 | `network_test.sh` | per-device keys, peer sync idempotence, firewall rules (fake commands) |
@@ -47,8 +47,8 @@ because some systems mount `/tmp` `noexec`.
 - Each test owns a `mktemp -d` sandbox and stops its server in `EXIT` trap.
 - `handler_test.sh` starts the C relay directly; the handler is the real
   `scripts/http_handler.sh`, with `STATE_DIR` and `PUBLISHED_ROOT` overridden.
-- `site_test.sh` runs `deploy/files/sync_site.sh` against a temporary tree and a
-  local bare git repository, so it never touches the real server.
+- `site_test.sh` runs `site/deploy/files/sync_site.sh` against a temporary tree
+  and a local bare git repository, so it never touches the real server.
 - `network_test.sh` replaces `wg`, `ip` and `nft` with tiny fakes in a temporary
   `PATH`, proving key reuse and rule idempotence without touching the host.
 - The suite deliberately does not test real WireGuard interfaces or real

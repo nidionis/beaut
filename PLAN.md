@@ -45,18 +45,18 @@ Aucune bibliothèque de parsing HTTP. On lit uniquement :
 ## Déploiement (`deploy.sh`) — identité auto-détectée
 1. Le déploiement prouve d'abord que **`SERVICE_USER`** s'authentifie par clé et
    possède `sudo -n`. Si oui, aucun bootstrap n'est relancé. Sinon seulement,
-   **`BOOTSTRAP_USER`** (root conseillé) applique `deploy/files/bootstrap.sh` :
+   **`BOOTSTRAP_USER`** (root conseillé) applique `site/deploy/files/bootstrap.sh` :
    crée `SERVICE_USER=beaut`, autorise la clé publique, installe la **copie
    root:root** des scripts, écrit la config racine (surcharges d'abord, puis le
    schéma), accorde le sudo passwordless à `SERVICE_USER`.
 2. Tout le reste se fait en **`SERVICE_USER`**, par clé uniquement (`BatchMode`,
-   `publickey`), sans mot de passe, dans `$HOME/.beaut` : `scripts/`, `deploy/`,
-   `state/`, `shared/`. Le démarrage du service est piloté par
-   `deploy/files/remote_install.sh` (exécuté via `remote_run`).
+   `publickey`), sans mot de passe, dans `$HOME/.beaut` : `site/` (l'arborescence
+   publiée avec ses builtins), `state/`. Le démarrage du service est piloté par
+   `site/deploy/files/remote_install.sh` (exécuté via `remote_run`).
 
 - Les déploiements suivants rafraîchissent la copie root via
-  `deploy/files/install_privileged.sh` (toujours root:root, non inscriptible par
-  l'utilisateur de service).
+  `site/deploy/files/install_privileged.sh` (toujours root:root, non inscriptible
+  par l'utilisateur de service).
 - `sudo` passwordless est accordé à `SERVICE_USER` via `/etc/sudoers.d/<SERVICE_USER>`
   (règle `ALL=(ALL) NOPASSWD: ALL`, validée avec `visudo`) : l'accès réseau/WireGuard
   passe par la copie root, qui lit le registre et les clés de `$HOME/.beaut/state`.
@@ -66,20 +66,22 @@ Aucune bibliothèque de parsing HTTP. On lit uniquement :
   conservée, chaînes `nft`/`iptables` reconstruites vers un seul jeu de règles.
   Les appareils approuvés sont synchronisés comme peers (`sync-peers`, `/32`) ;
   les peers inconnus sont laissés intacts, les révoqués sont retirés.
-- Publication : `/node` est généré **sur le serveur** depuis `scripts/node.sh`
-  uploadé et l'adresse déployée, avec **aucun fichier sourcé**, en `sh` POSIX.
-  `/join` n'est plus publié ; `scripts/wireguard_join.sh` et `scripts/device.sh
-  join` restent des commandes du dépôt.
+- Publication : `/node` est généré **sur le serveur** depuis `site/scripts/node.sh`
+  et l'adresse déployée, avec **aucun fichier sourcé**, en `sh` POSIX.
+  `/join` n'est plus publié ; `site/scripts/wireguard_join.sh` et
+  `site/scripts/device.sh join` restent des commandes du dépôt.
 - Le dossier `site/` est archivé (hors `.git`) puis appliqué par
-  `deploy/files/sync_site.sh` vers `$PUBLISHED_ROOT` ; les dossiers git de premier
-  niveau sont clonés/pullés depuis leur remote au lieu d'être uploadés.
-- Les anciens `scripts/` et `deploy/` distants sont supprimés avant copie pour
-  qu'un fichier retiré du dépôt ne reste pas publié.
-- Serveur lancé en service utilisateur systemd (`deploy/files/beaut.service`),
+  `site/deploy/files/sync_site.sh` vers `$PUBLISHED_ROOT` (`~/.beaut/site`) ;
+  l'ancienne arborescence est remplacée par un swap atomique, et les dossiers git
+  de premier niveau sont clonés/fast-forwardés depuis leur remote.
+- Les builtins (`site/scripts`, `site/deploy`) sont dans l'arborescence publiée :
+  aucun second exemplaire sous `shared/`. Des liens symboliques `scripts` et
+  `deploy` à la racine du dépôt gardent les commandes locales inchangées.
+- Serveur lancé en service utilisateur systemd (`site/deploy/files/beaut.service`),
   secours `setsid` (fallback via `remote_install.sh`).
 - À l'issue : le serveur est joignable via le listener `socat` ou le relay C
-  compilé (`scripts/http_server.c`), `curl /node | sh` fonctionne sans fichier
-  client.
+  compilé (`site/scripts/http_server.c`), `curl /node | sh` fonctionne sans
+  fichier client.
 - Mise à jour et synchronisation des scripts par **git** (`git pull`).
 
 ## Attribution virtuelle (secrets / chemins)
@@ -115,33 +117,55 @@ correspondance. Le chemin est une phrase de dictionnaire + suffixe hexadécimal.
 
 ## Arborescence publique `site/`
 
-- Le dossier `site/` du dépôt est la source de vérité de l'arborescence publique.
-  `deploy.sh` le miroir vers `$PUBLISHED_ROOT` (`~/.beaut/shared` sur le serveur)
-  et supprime les entrées qu'il avait déployées lorsqu'elles disparaissent du
-  dépôt (manifeste privé `state/site_manifest`).
+- Le dossier `site/` du dépôt est la source de vérité **et** l'arborescence
+  publiée. `deploy.sh` l'upload et la remplace dans `$PUBLISHED_ROOT`
+  (`~/.beaut/site` sur le serveur) par un swap atomique : une entrée retirée du
+  dépôt disparaît, sans manifeste séparé.
+- Les builtins vivent dans `site/` : `site/scripts/` est servi à `/scripts/`,
+  `site/deploy/` à `/deploy/`, et `/node` est généré dans `site/node/` après le
+  sync. La racine du dépôt garde des liens symboliques `scripts` et `deploy`
+  pour les commandes locales.
 - Résolution : `/a/b/c` sert le fichier `$PUBLISHED_ROOT/a/b/c` ; `/a/b` sert
   `a/b/index.html` (ou `index.htm`) s'il existe, sinon le premier
-  `a/b/DEFAU*.sh`. Les pages HTML réelles et les endpoints de scripts cohabitent.
+  `a/b/DEFAU*.sh`, sinon une liste de dossier générée. Les pages HTML réelles,
+  les endpoints de scripts et l'exploration de l'arborescence cohabitent.
+- Les pages texte peuvent utiliser `{{SERVER_HOST}}`, `{{HTTP_PORT}}` et les
+  autres valeurs publiques de configuration, remplacées au moment du service.
+- Le journal n'est pas public : il vit dans l'arborescence cachée et n'est
+  joignable qu'à `/<secret>/journal/`.
 - Le type MIME suit l'extension (`.html`, `.css`, `.js`, `.json`, `.md`, images,
   ...) ; les scripts et fichiers inconnus restent `text/plain`.
 - Les segments de chemin commençant par un point ne sont jamais servis : `.git`,
   `.env` et autres fichiers cachés restent privés, même dans un dépôt.
 - Un dossier de premier niveau `site/<nom>` contenant `.git` est traité comme un
   dépôt git séparé : son URL d'origine est enregistrée, le dossier n'est pas
-  uploadé, le serveur le clone au premier déploiement puis exécute
-  `git pull --ff-only`. Il est servi à `/<nom>/`. Le remote doit être joignable
-  depuis le serveur (SSH ou HTTPS).
+  uploadé, le serveur le clone ou le fast-forward. Il est servi à `/<nom>/`. Le
+  remote doit être joignable depuis le serveur (SSH ou HTTPS).
 
 ## Arborescence personnelle cachée et journal
 
-- `scripts/svr.sh` crée `$SVR_ROOT` (diary/, notes/, `DEFAULT.sh` statique).
+- `scripts/svr.sh` gère `$SVR_ROOT` (`journal/`, `perso/`, `notes/`,
+  `DEFAULT.sh` statique). `SVR_DIR` fixe le nom du dossier ; vide, un nom caché
+  `.svr-<8 aléatoires>` est généré une fois dans `state/svr_dir` (mode 600).
 - `SVR_MODE=random` (défaut) : 8 caractères `[a-z0-9]`, persistés dans
   `state/svr_path` (mode 600). `sha` : 8 premiers caractères de
   `sha256("beaut-svr:" + SVR_SECRET)`. `plain` : valeur `SVR` explicite.
-- L'HTTP sert `/<secret>/…` depuis `$SVR_ROOT` ; aucun listing ni manifeste
-  n'est généré, et un préfixe erroné ne donne jamais accès à l'arbre.
-- `scripts/lib/journal.sh` : une entrée Markdown par jour,
-  `$JOURNAL_DIRECTORY/YYYY-MM-DD.md`, en ajout seul.
+- L'HTTP sert `/<secret>/…` depuis `$SVR_ROOT` ; un préfixe erroné ne donne jamais
+  accès à l'arbre, et les segments commençant par un point (`.git`) restent
+  privés.
+- `scripts/lib/journal.sh` est un portage de `~/.svr/usr/bin/journal` :
+  `$SVR_ROOT/journal/YYYY/MM/DD/<sous-dossier>/<nom>.md`, en-tête
+  (AAMMJJ, heure, utilisateur, hôte, séparateur, chemin), vue
+  `$SVR_ROOT/journal/<hôte>/<sous-dossier>/<nom>.md` et `index.html` régénéré.
+- `svr.sh install` installe les commandes `journal` et `journal-perso` dans
+  `$SVR_BIN_DIR` (défaut `~/.local/bin`) et ajoute ce dossier aux fichiers de
+  démarrage du shell de connexion s'il manque au `PATH` (`SVR_INSTALL_PATH=0`
+  pour désactiver). Le dossier journal est un dépôt git :
+  pull avant édition, commit après, push si un remote existe (`JOURNAL_GIT=0`
+  pour désactiver). `svr.sh remote <url>` (ou `JOURNAL_REMOTE`) remplace
+  `origin`, ce qui sert à repointers un serveur restauré.
+- `svr.sh init` migre l'ancien `$SERVICE_ROOT/svr` et son `diary/` vers le
+  nouveau dossier et `journal/`.
 
 ## Tests
 
@@ -149,11 +173,13 @@ Sous-projet `tests/` : `tests/run.sh`. Aucun root, aucun réseau externe, aucun
 WireGuard réel. Chaque test lance le relay C sur `127.0.0.1` avec un état
 temporaire et couvre : cycle de vie des tokens, TTL, arborescences statique et
 cachée, pages `index.html` et types MIME, chemins cachés bloqués, synchronisation
-du `site/` public (miroir, purge, dépôts git), 404, traversée,
+du `site/` public (remplacement complet, purge, dépôts git), 404, traversée,
 `curl /node | sh` depuis un dossier vide, `/join` non publié, `/signin` +
-`/door`, registre des appareils, invitations hachées, journal Markdown,
-attributions virtuelles, clés WireGuard par appareil, synchronisation des peers
-et idempotence du pare-feu (commandes factices), `bash -n` /
+`/door`, registre des appareils, invitations hachées, journal compatible
+`~/.svr` (arbre AAAA/MM/JJ, en-tête, vue par hôte, commits git et commande
+installée), arborescence cachée servie sous le préfixe secret, attributions
+virtuelles, clés WireGuard par appareil, synchronisation des peers et
+idempotence du pare-feu (commandes factices), `bash -n` /
 `gcc -fsyntax-only` / `git diff --check`.
 
 ## Configuration
@@ -166,33 +192,34 @@ automatiquement** : aucune liste d'export à maintenir.
 config.env                  variables d'environnement (éditables à la main)
 config.env.example          modèle + schéma de repli
 deploy.sh                   orchestrateur client SSH/SFTP (SERVICE_USER auto-détecté ; BOOTSTRAP_USER en secours ; --no-root = user)
-deploy/files/bootstrap.sh   première application en root : utilisateur, clé, config racine, sudo grant
-deploy/files/install_privileged.sh  rafraîchit la copie root des scripts + config gelée
-deploy/files/sync_site.sh   miroir de site/ vers PUBLISHED_ROOT + clone/pull git
-deploy/files/remote_install.sh   phase utilisateur : service systemd + demarrage du serveur
-deploy/files/beaut.service  service utilisateur systemd
-deploy/files/start.sh       script de démarrage (fichier à part, jamais inline)
-scripts/http_server.sh      chaine de listeners : socat → relay C → fail
-scripts/http_server.c       relay TCP minimal (socat-enough, gcc)
-scripts/http_handler.sh     handler serveur (routes + arborescences, pas d'exécution)
-scripts/lib/http.sh         réponses HTTP, parsing, form URL-décodé, client http_request
-scripts/lib/state.sh        TSV unique + helpers token_create/token_find/token_field
-scripts/node.sh             script node POSIX autonome (| sh), réclame + exécute + rapporte
-scripts/build_published_node.sh  génère /node avec l'adresse figée, sans source
-scripts/network.sh          wrapper WireGuard + pare-feu + sync-peers
-scripts/lib/wireguard.sh    clés par appareil, peers, helpers client/serveur idempotents
-scripts/device.sh           CLI identité appareil, invitations, enrôlement, approbation
-scripts/lib/devices.sh      registre, clés, adresses, trust, porte
-scripts/lib/invites.sh      invitations passMessage hachées (usages/TTL/révocation)
-scripts/svr.sh              CLI arborescence cachée + journal Markdown
-scripts/lib/personal_tree.sh  modes de chemin secret et disposition statique
-scripts/lib/journal.sh      journal Markdown quotidien en ajout seul
-scripts/lib/passphrase.sh   mots, aléa, passphrases, secrets
-scripts/attribution.sh      CLI d'attribution virtuelle (secrets/chemins)
-scripts/lib/virtual_path.sh algorithme passphrase/chemin/registre
-scripts/lib/core.sh         chemins, config, log, état
-site/                       arborescence publique déployée vers PUBLISHED_ROOT
+site/deploy/files/bootstrap.sh   première application en root : utilisateur, clé, config racine, sudo grant
+site/deploy/files/install_privileged.sh  rafraîchit la copie root des scripts + config gelée
+site/deploy/files/sync_site.sh   remplace site/ dans PUBLISHED_ROOT + clone/fast-forward git
+site/deploy/files/remote_install.sh   phase utilisateur : service systemd + demarrage du serveur
+site/deploy/files/beaut.service  service utilisateur systemd
+site/deploy/files/start.sh       script de démarrage (fichier à part, jamais inline)
+site/scripts/http_server.sh      chaine de listeners : socat → relay C → fail
+site/scripts/http_server.c       relay TCP minimal (socat-enough, gcc)
+site/scripts/http_handler.sh     handler serveur (routes + arborescences, pas d'exécution)
+site/scripts/lib/http.sh         réponses HTTP (dont redirections), parsing, form, client
+site/scripts/lib/state.sh        TSV unique + helpers token_create/token_find/token_field
+site/scripts/node.sh             script node POSIX autonome (| sh), réclame + exécute + rapporte
+site/scripts/build_published_node.sh  génère /node avec l'adresse figée, sans source
+site/scripts/network.sh          wrapper WireGuard + pare-feu + sync-peers
+site/scripts/lib/wireguard.sh    clés par appareil, peers, helpers client/serveur idempotents
+site/scripts/device.sh           CLI identité appareil, invitations, enrôlement, approbation
+site/scripts/lib/devices.sh      registre, clés, adresses, trust, porte
+site/scripts/lib/invites.sh      invitations passMessage hachées (usages/TTL/révocation)
+site/scripts/svr.sh              CLI arborescence cachée, journal git et installeur
+site/scripts/journal_cli.sh      commande installée journal / journal-perso
+site/scripts/lib/personal_tree.sh  nom de dossier caché et modes de chemin secret
+site/scripts/lib/journal.sh      journal compatible ~/.svr : arbre daté, vue hôte, git
+site/scripts/lib/passphrase.sh   mots, aléa, passphrases, secrets
+site/scripts/attribution.sh      CLI d'attribution virtuelle (secrets/chemins)
+site/scripts/lib/virtual_path.sh algorithme passphrase/chemin/registre
+site/scripts/lib/core.sh         chemins, config, log, état
+scripts, deploy             liens symboliques vers site/ pour les commandes locales
+site/                       arborescence publique ET builtins (PUBLISHED_ROOT = ~/.beaut/site)
 tests/                      sous-projet de tests isolé (tests/run.sh)
 state/db.tsv                base d'état (tokens, travaux, résultats)
-shared/                     arborescence HTTP servie (fichier, sinon index.html, sinon DEFAU*.sh)
 ```

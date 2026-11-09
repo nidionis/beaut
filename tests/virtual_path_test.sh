@@ -49,7 +49,7 @@ assert_equal "${rotated#*$'\t'}" "$(attribution_find_row "$virtual_path" | cut -
 
 # --- uniqueness -------------------------------------------------------------
 declare -A seen_paths=()
-for index in $(seq 1 20); do
+for index in {1..20}; do
   entry="$(attribution_create service "service-$index" "resource-$index")"
   entry_path="${entry%%$'\t'*}"
   assert_equal "" "${seen_paths[$entry_path]:-}" "virtual path collision"

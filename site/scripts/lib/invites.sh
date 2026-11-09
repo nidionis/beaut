@@ -25,13 +25,7 @@ invite_registry_file() {
 }
 
 invite_registry_initialize() {
-  local directory registry
-  directory="$(invite_directory)"
-  registry="$(invite_registry_file)"
-  mkdir -p -- "$directory"
-  [[ -f "$registry" ]] || : > "$registry"
-  chmod 700 "$directory" 2>/dev/null || true
-  chmod 600 "$registry" 2>/dev/null || true
+  state_file_init "$(invite_directory)" "$(invite_registry_file)"
 }
 
 invite_hash_secret() {
@@ -40,29 +34,19 @@ invite_hash_secret() {
     printf 'missing passMessage\n' >&2
     return 1
   }
-  if has_command sha256sum; then
-    printf '%s' "$plaintext" | sha256sum | awk '{print $1}'
-  elif has_command shasum; then
-    printf '%s' "$plaintext" | shasum -a 256 | awk '{print $1}'
-  elif has_command openssl; then
-    printf '%s' "$plaintext" | openssl dgst -sha256 | awk '{print $NF}'
-  else
-    printf 'no SHA-256 tool available (sha256sum, shasum or openssl)\n' >&2
-    return 1
-  fi
+  sha256_hex "$plaintext"
 }
 
 invite_validate_trust() {
   case "${1:-}" in
     guest|trusted) return 0 ;;
-    *) return 1 ;;
+    *)             return 1 ;;
   esac
 }
 
 invite_generate_id() {
-  local candidate attempt registry
-  registry="$(invite_registry_file)"
-  for attempt in $(seq 1 200); do
+  local candidate attempt
+  for attempt in {1..200}; do
     candidate="$(passphrase_random_alphanumeric 10)"
     if [[ -n "$candidate" && -z "$(invite_find "$candidate")" ]]; then
       printf '%s' "$candidate"
@@ -76,56 +60,42 @@ invite_find() {
   local invite_id="${1:-}" registry
   [[ -n "$invite_id" ]] || return 1
   registry="$(invite_registry_file)"
-  [[ -f "$registry" ]] || return 1
-  awk -F'\t' -v id="$invite_id" '$1==id{print; exit}' "$registry"
+  state_find "$registry" 1 "$invite_id"
 }
 
 invite_field() {
-  local invite_id="${1:?missing invite id}" column="${2:?missing column}"
-  local row
-  row="$(invite_find "$invite_id")" || return 1
-  [[ -n "$row" ]] || return 1
-  printf '%s' "$row" | cut -f "$column"
+  state_field "$(invite_find "${1:?missing invite id}")" "${2:?missing column}"
 }
 
 invite_update() {
-  local invite_id="${1:?missing invite id}" column="${2:?missing column}" value="${3:-}"
-  local registry temporary_file
+  local registry
   registry="$(invite_registry_file)"
-  [[ -n "$(invite_find "$invite_id")" ]] || return 1
-  temporary_file="$(mktemp)"
-  awk -F'\t' -v OFS='\t' -v id="$invite_id" -v column="$column" -v value="$value" \
-    '$1==id{$column=value} {print}' "$registry" > "$temporary_file"
-  mv -- "$temporary_file" "$registry"
-  chmod 600 "$registry" 2>/dev/null || true
+  [[ -n "$(invite_find "${1:?missing invite id}")" ]] || return 1
+  state_update "$registry" "${2:?missing column}" "${3:-}" 1 "$1"
 }
 
 invite_is_usable_row() {
   local row="${1:-}" now status expires_at max_uses used_count
   [[ -n "$row" ]] || return 1
   now="$(date +%s)"
-  status="$(printf '%s' "$row" | cut -f7)"
-  expires_at="$(printf '%s' "$row" | cut -f6)"
-  max_uses="$(printf '%s' "$row" | cut -f4)"
-  used_count="$(printf '%s' "$row" | cut -f5)"
+  status="$(state_field "$row" 7)"
+  expires_at="$(state_field "$row" 6)"
+  max_uses="$(state_field "$row" 4)"
+  used_count="$(state_field "$row" 5)"
   [[ "$status" == "active" ]] || return 1
-  if [[ "$expires_at" =~ ^[0-9]+$ ]] && (( expires_at > 0 && now >= expires_at )); then
-    return 1
-  fi
-  if [[ "$max_uses" =~ ^[0-9]+$ ]] && (( max_uses > 0 && used_count >= max_uses )); then
-    return 1
-  fi
+  [[ "$expires_at" =~ ^[0-9]+$ ]] && (( expires_at > 0 && now >= expires_at )) && return 1
+  [[ "$max_uses" =~ ^[0-9]+$ ]] && (( max_uses > 0 && used_count >= max_uses )) && return 1
   return 0
 }
 
 invite_find_usable_by_secret_hash() {
-  local secret_hash="${1:-}" registry row
+  local secret_hash="${1:-}" row registry
   [[ -n "$secret_hash" ]] || return 1
   registry="$(invite_registry_file)"
   [[ -f "$registry" ]] || return 1
   while IFS= read -r row; do
     [[ -n "$row" ]] || continue
-    [[ "$(printf '%s' "$row" | cut -f3)" == "$secret_hash" ]] || continue
+    [[ "$(state_field "$row" 3)" == "$secret_hash" ]] || continue
     invite_is_usable_row "$row" || continue
     printf '%s\n' "$row"
     return 0
@@ -160,37 +130,30 @@ invite_create() {
   pass_message="$(passphrase_generate_passphrase "${INVITE_WORD_COUNT:-4}")-$(passphrase_random_hex 3)"
   secret_hash="$(invite_hash_secret "$pass_message")" || return 1
   created_at="$(date +%s)"
-  if (( ttl_seconds > 0 )); then
-    expires_at=$((created_at + ttl_seconds))
-  else
-    expires_at=0
-  fi
+  expires_at=0
+  (( ttl_seconds > 0 )) && expires_at=$((created_at + ttl_seconds))
   registry="$(invite_registry_file)"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$invite_id" "$trust" "$secret_hash" "$max_uses" "0" "$expires_at" "active" "$created_at" "$note" \
-    >> "$registry"
+  state_append "$registry" \
+    "$invite_id" "$trust" "$secret_hash" "$max_uses" "0" "$expires_at" "active" "$created_at" "$note"
   chmod 600 "$registry" 2>/dev/null || true
   printf '%s\t%s' "$invite_id" "$pass_message"
 }
 
 invite_consume() {
-  local invite_id="${1:?missing invite id}" used_count max_uses
-  local row
+  local invite_id="${1:?missing invite id}" used_count max_uses row
   row="$(invite_find "$invite_id")" || return 1
-  [[ -n "$row" ]] || return 1
   invite_is_usable_row "$row" || return 1
-  used_count="$(printf '%s' "$row" | cut -f5)"
-  max_uses="$(printf '%s' "$row" | cut -f4)"
+  used_count="$(state_field "$row" 5)"
+  max_uses="$(state_field "$row" 4)"
   used_count=$((used_count + 1))
   invite_update "$invite_id" 5 "$used_count"
-  if [[ "$max_uses" =~ ^[0-9]+$ ]] && (( max_uses > 0 && used_count >= max_uses )); then
-    invite_update "$invite_id" 7 "exhausted"
-  fi
+  [[ "$max_uses" =~ ^[0-9]+$ ]] && (( max_uses > 0 && used_count >= max_uses )) \
+    && invite_update "$invite_id" 7 "exhausted"
+  return 0
 }
 
 invite_revoke() {
-  local invite_id="${1:?missing invite id}"
-  invite_update "$invite_id" 7 "revoked"
+  invite_update "${1:?missing invite id}" 7 "revoked"
 }
 
 # Operators list invites without ever seeing the digest or plaintext.

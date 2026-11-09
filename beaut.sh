@@ -33,7 +33,7 @@ usage: $0 {server|node|device|svr|init}
   server  configure WireGuard (requires root) and serve HTTP
   node    claim, execute and report one task
   device  per-device identity, invites and enrollment
-  svr     hidden personal tree and Markdown journal
+  svr     hidden personal tree, git journal and command installer
   init    create the state directory
 EOF
     exit 2

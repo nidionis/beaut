@@ -103,22 +103,13 @@ nft_rebuild_nat_chain() {
   nft add rule inet beaut nat oifname != wg0 masquerade 2>/dev/null || true
 }
 
-iptables_rule_is_present() {
-  iptables -C "$@" >/dev/null 2>&1
-}
-
 iptables_ensure_rule() {
-  iptables_rule_is_present "$@" && return 0
-  iptables -I "$@" >/dev/null 2>&1 || true
-}
-
-iptables_nat_rule_is_present() {
-  iptables -t nat -C "$@" >/dev/null 2>&1
+  iptables -C "$@" >/dev/null 2>&1 || iptables -I "$@" >/dev/null 2>&1 || true
 }
 
 iptables_nat_ensure_rule() {
-  iptables_nat_rule_is_present "$@" && return 0
-  iptables -t nat -I "$@" >/dev/null 2>&1 || true
+  iptables -t nat -C "$@" >/dev/null 2>&1 \
+    || iptables -t nat -I "$@" >/dev/null 2>&1 || true
 }
 
 open_ports() {
@@ -166,12 +157,8 @@ sync_wireguard_peers() {
   if [[ -f "$registry" ]]; then
     while IFS= read -r peer; do
       [[ -n "$peer" ]] || continue
-      if awk -F'\t' -v key="$peer" '$1==key{found=1} END{exit(found?0:1)}' "$desired_file"; then
-        continue
-      fi
-      if awk -F'\t' -v key="$peer" '$3==key{found=1} END{exit(found?0:1)}' "$registry"; then
-        wg set wg0 peer "$peer" remove || true
-      fi
+      state_has "$desired_file" 1 "$peer" && continue
+      state_has "$registry" 3 "$peer" && wg set wg0 peer "$peer" remove || true
     done < "$current_file"
   fi
 
@@ -245,7 +232,6 @@ configure_wireguard_client() {
 join_wireguard() {
   local server_public_key="${1:?usage: join_wireguard <server_public_key>}"
   local node_address
-  ensure_wireguard_keys
   node_address="$(wireguard_interface_address || true)"
   [[ -n "$node_address" ]] || node_address="$(next_wireguard_node_address)"
   configure_wireguard_client "$server_public_key" "$node_address"

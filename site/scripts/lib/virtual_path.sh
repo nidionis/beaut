@@ -10,6 +10,9 @@
 set -uo pipefail
 
 VIRTUAL_PATH_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if ! declare -F state_find >/dev/null 2>&1; then
+  . "$VIRTUAL_PATH_LIB_DIR/core.sh"
+fi
 . "$VIRTUAL_PATH_LIB_DIR/passphrase.sh"
 
 attribution_directory() {
@@ -21,13 +24,7 @@ attribution_registry_file() {
 }
 
 attribution_registry_initialize() {
-  local directory registry
-  directory="$(attribution_directory)"
-  registry="$(attribution_registry_file)"
-  mkdir -p -- "$directory"
-  [[ -f "$registry" ]] || : > "$registry"
-  chmod 700 "$directory" 2>/dev/null || true
-  chmod 600 "$registry" 2>/dev/null || true
+  state_file_init "$(attribution_directory)" "$(attribution_registry_file)"
 }
 
 attribution_validate_field() {
@@ -40,29 +37,6 @@ attribution_validate_field() {
   esac
 }
 
-# Backwards-compatible aliases for callers of the original attribution helpers.
-attribution_words_load() {
-  passphrase_words_load "${ATTRIBUTION_DICTIONARY:-}"
-  ATTRIBUTION_WORDS=("${PASSPHRASE_WORDS[@]}")
-}
-
-attribution_random_integer() {
-  passphrase_random_integer "$@"
-}
-
-attribution_random_hex() {
-  passphrase_random_hex "$@"
-}
-
-attribution_generate_secret() {
-  passphrase_generate_secret "${1:-${ATTRIBUTION_SECRET_BYTES:-24}}"
-}
-
-attribution_generate_passphrase() {
-  passphrase_generate_passphrase \
-    "${1:-${ATTRIBUTION_WORD_COUNT:-4}}" "${ATTRIBUTION_DICTIONARY:-}"
-}
-
 attribution_generate_path() {
   local namespace="${1:-${ATTRIBUTION_PATH_NAMESPACE:-v}}"
   local word_count="${2:-${ATTRIBUTION_WORD_COUNT:-4}}"
@@ -70,25 +44,21 @@ attribution_generate_path() {
   case "$namespace" in
     ''|*[!A-Za-z0-9._-]*) namespace="v" ;;
   esac
-  passphrase="$(attribution_generate_passphrase "$word_count")" || return 1
-  suffix="$(attribution_random_hex 3)"
+  passphrase="$(passphrase_generate_passphrase "$word_count" "${ATTRIBUTION_DICTIONARY:-}")" || return 1
+  suffix="$(passphrase_random_hex 3)"
   printf '/%s/%s-%s' "$namespace" "$passphrase" "$suffix"
 }
 
 attribution_find_row() {
-  local virtual_path="${1:?missing virtual path}"
   local registry
   registry="$(attribution_registry_file)"
-  [[ -f "$registry" ]] || return 1
-  awk -F'\t' -v p="$virtual_path" '$3==p{print; exit}' "$registry"
+  state_find "$registry" 3 "${1:?missing virtual path}"
 }
 
 attribution_find_row_by_identity() {
-  local kind="${1:?missing kind}" name="${2:?missing name}"
   local registry
   registry="$(attribution_registry_file)"
-  [[ -f "$registry" ]] || return 1
-  awk -F'\t' -v k="$kind" -v n="$name" '$1==k && $2==n{print; exit}' "$registry"
+  state_find_two "$registry" 1 "${1:?missing kind}" 2 "${2:?missing name}"
 }
 
 # Create a fresh attribution. Prints "virtual_path<TAB>secret".
@@ -111,10 +81,9 @@ attribution_create() {
   while [[ -n "$(attribution_find_row "$virtual_path")" ]]; do
     virtual_path="$(attribution_generate_path "" "$word_count")" || return 1
   done
-  secret="$(attribution_generate_secret)"
+  secret="$(passphrase_generate_secret "${ATTRIBUTION_SECRET_BYTES:-24}")"
   created_at="$(date +%s)"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$kind" "$name" "$virtual_path" "$resource" "$secret" "$created_at" >> "$registry"
+  state_append "$registry" "$kind" "$name" "$virtual_path" "$resource" "$secret" "$created_at"
   printf '%s\t%s\n' "$virtual_path" "$secret"
 }
 
@@ -122,7 +91,7 @@ attribution_create() {
 # resource in place. Prints "virtual_path<TAB>secret".
 attribution_ensure() {
   local kind="${1:?missing kind}" name="${2:?missing name}" resource="${3:?missing resource}"
-  local word_count="${4:-${ATTRIBUTION_WORD_COUNT:-4}}" existing registry tmp
+  local word_count="${4:-${ATTRIBUTION_WORD_COUNT:-4}}" existing registry virtual_path
   attribution_validate_field kind "$kind" || return 1
   attribution_validate_field name "$name" || return 1
   attribution_validate_field resource "$resource" || return 1
@@ -130,14 +99,12 @@ attribution_ensure() {
   attribution_registry_initialize
   existing="$(attribution_find_row_by_identity "$kind" "$name")"
   if [[ -n "$existing" ]]; then
-    registry="$(attribution_registry_file)"
-    if [[ "$(printf '%s' "$existing" | cut -f4)" != "$resource" ]]; then
-      tmp="$(mktemp)"
-      awk -F'\t' -v OFS='\t' -v k="$kind" -v n="$name" -v r="$resource" \
-        '$1==k && $2==n{$4=r} {print}' "$registry" > "$tmp"
-      mv "$tmp" "$registry"
+    virtual_path="$(state_field "$existing" 3)"
+    if [[ "$(state_field "$existing" 4)" != "$resource" ]]; then
+      registry="$(attribution_registry_file)"
+      state_update "$registry" 4 "$resource" 3 "$virtual_path"
     fi
-    printf '%s\t%s\n' "$(printf '%s' "$existing" | cut -f3)" "$(printf '%s' "$existing" | cut -f5)"
+    printf '%s\t%s\n' "$virtual_path" "$(state_field "$existing" 5)"
     return 0
   fi
   attribution_create "$kind" "$name" "$resource" "$word_count"
@@ -146,30 +113,24 @@ attribution_ensure() {
 attribution_resolve() {
   local row
   row="$(attribution_find_row "${1:?missing virtual path}")" || return 1
-  [[ -n "$row" ]] || return 1
-  printf '%s' "$row" | cut -f4
+  state_field "$row" 4
 }
 
 # Replace the secret for a virtual path. Prints "virtual_path<TAB>secret".
 attribution_rotate() {
-  local virtual_path="${1:?missing virtual path}" secret registry tmp
+  local virtual_path="${1:?missing virtual path}" secret registry
   [[ -n "$(attribution_find_row "$virtual_path")" ]] || return 1
-  secret="$(attribution_generate_secret)"
+  secret="$(passphrase_generate_secret "${ATTRIBUTION_SECRET_BYTES:-24}")"
   registry="$(attribution_registry_file)"
-  tmp="$(mktemp)"
-  awk -F'\t' -v OFS='\t' -v p="$virtual_path" -v s="$secret" \
-    '$3==p{$5=s} {print}' "$registry" > "$tmp"
-  mv "$tmp" "$registry"
+  state_update "$registry" 5 "$secret" 3 "$virtual_path"
   printf '%s\t%s\n' "$virtual_path" "$secret"
 }
 
 attribution_remove() {
-  local virtual_path="${1:?missing virtual path}" registry tmp
+  local virtual_path="${1:?missing virtual path}" registry
   [[ -n "$(attribution_find_row "$virtual_path")" ]] || return 1
   registry="$(attribution_registry_file)"
-  tmp="$(mktemp)"
-  awk -F'\t' -v p="$virtual_path" '$3!=p{print}' "$registry" > "$tmp"
-  mv "$tmp" "$registry"
+  state_remove "$registry" 3 "$virtual_path"
 }
 
 attribution_list() {

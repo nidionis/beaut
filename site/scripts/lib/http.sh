@@ -7,6 +7,7 @@ set -uo pipefail
 http_reason_phrase() {
   case "$1" in
     200) printf 'OK' ;;
+    302) printf 'Found' ;;
     400) printf 'Bad Request' ;;
     403) printf 'Forbidden' ;;
     404) printf 'Not Found' ;;
@@ -15,10 +16,19 @@ http_reason_phrase() {
   esac
 }
 
+http_send_body() {
+  local status_code="$1" content_type="$2" response_body="${3:-}"
+  printf 'HTTP/1.1 %s %s\r\nContent-Length: %s\r\nContent-Type: %s\r\nConnection: close\r\n\r\n%s' \
+    "$status_code" "$(http_reason_phrase "$status_code")" "${#response_body}" "$content_type" "$response_body"
+}
+
 http_send_response() {
-  local status_code="$1" response_body="${2:-}"
-  printf 'HTTP/1.1 %s %s\r\nContent-Length: %s\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n%s' \
-    "$status_code" "$(http_reason_phrase "$status_code")" "${#response_body}" "$response_body"
+  http_send_body "$1" 'text/plain; charset=utf-8' "${2:-}"
+}
+
+http_send_redirect() {
+  local location="$1"
+  printf 'HTTP/1.1 302 Found\r\nLocation: %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n' "$location"
 }
 
 # Pick a content type from the file extension. Scripts and unknown files stay
@@ -50,10 +60,47 @@ http_content_type_for_file() {
   esac
 }
 
+# Escape a value for an HTML text node or attribute.
+http_html_escape() {
+  local value="${1:-}"
+  value="${value//&/&amp;}"
+  value="${value//</&lt;}"
+  value="${value//>/&gt;}"
+  value="${value//\"/&quot;}"
+  printf '%s' "$value"
+}
+
+# Render {{NAME}} placeholders from configuration. Only public deployment
+# values are substituted; everything else in the file is left byte-for-byte.
+http_render_variables() {
+  local file_path="$1" content variable value
+  IFS= read -r -d '' content < "$file_path" || true
+  for variable in SERVER_HOST HTTP_PORT SERVICE_USER WG_PORT WG_NETWORK WG_SERVER_IP; do
+    value="${!variable:-}"
+    [[ -n "$value" ]] || continue
+    content="${content//"{{$variable}}"/$value}"
+  done
+  printf '%s' "$content"
+}
+
+http_file_is_text() {
+  case "$1" in
+    text/html*|text/css*|text/markdown*|application/javascript*|application/json*|image/svg+xml) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# serve_mode: "render" substitutes {{NAME}}; "raw" streams the file unchanged.
 http_send_file() {
-  local file_path="$1" file_size content_type
-  file_size="$(wc -c < "$file_path")"
+  local file_path="$1" serve_mode="${2:-render}"
+  local content_type body file_size
   content_type="$(http_content_type_for_file "$file_path")"
+  if [[ "$serve_mode" == "render" ]] && http_file_is_text "$content_type"; then
+    body="$(http_render_variables "$file_path")"
+    http_send_body 200 "$content_type" "$body"
+    return
+  fi
+  file_size="$(wc -c < "$file_path")"
   printf 'HTTP/1.1 200 OK\r\nContent-Length: %s\r\nContent-Type: %s\r\nConnection: close\r\n\r\n' \
     "$file_size" "$content_type"
   cat -- "$file_path"
@@ -141,17 +188,14 @@ http_get_form_param() {
   return 1
 }
 
+# Call the control server and set http_status and http_body. Extra arguments
+# are passed to curl (for example --data-urlencode field=value).
 http_request() {
-  # $1 = method (GET|POST), $2 = path, $3 = data (optional, urlencoded)
-  # Sets http_status and http_body (no output).
-  local method="$1" path="$2" data="${3:-}"
-  local tmp
-  tmp="$(mktemp)"
-  if [[ "$method" == "GET" ]]; then
-    http_status="$(curl -s -o "$tmp" -w '%{http_code}' "http://$SERVER_HOST:$HTTP_PORT$path")"
-  else
-    http_status="$(curl -s -o "$tmp" -w '%{http_code}' -X POST -H 'Content-Type: application/x-www-form-urlencoded' --data "$data" "http://$SERVER_HOST:$HTTP_PORT$path")"
-  fi
-  http_body="$(cat "$tmp")"
-  rm -f -- "$tmp"
+  local method="$1" path="$2"; shift 2
+  local response_file
+  response_file="$(mktemp)"
+  http_status="$(curl -s -o "$response_file" -w '%{http_code}' -X "$method" \
+    "$@" "http://$SERVER_HOST:$HTTP_PORT$path")"
+  http_body="$(cat "$response_file")"
+  rm -f -- "$response_file"
 }

@@ -11,15 +11,22 @@
     <h1>beaut</h1>
     <p>Minimalist shared-computing platform: a control server that serves
        scripts and validates tokens, plus nodes that fetch them.</p>
-    <h2>Entry points</h2>
+
+    <h2>Site</h2>
+    <ul>
+      <li><a href="/hello">/hello</a> — example directory default script
+          (<code>curl -fsS http://{{SERVER_HOST}}:{{HTTP_PORT}}/hello | sh</code>)</li>
+    </ul>
+    <p>The journal and personal tree are served only under the secret path.</p>
+
+    <h2>Builtins</h2>
+    <p>These live inside this site tree, under <code>site/</code>:</p>
     <ul>
       <li><a href="/node">/node</a> — node bootstrap script
-          (<code>curl -fsS http://192.168.8.240:8080/node | sh</code>)</li>
-      <li><a href="/hello">/hello</a> — example directory default script
-          (<code>curl -fsS http://192.168.8.240:8080/hello | sh</code>)</li>
+          (<code>curl -fsS http://{{SERVER_HOST}}:{{HTTP_PORT}}/node | sh</code>)</li>
+      <li><a href="/scripts/">/scripts/</a> — server scripts and libraries</li>
+      <li><a href="/deploy/">/deploy/</a> — deployment files</li>
     </ul>
-    <p>The personal journal lives under a secret prefix:
-       <code>/&lt;hidden&gt;/diary/YYYY-MM-DD.md</code>.</p>
   </main>
 </body>
 </html>

@@ -4,10 +4,11 @@
 # `set -a` is what exports them, so there is no hand-maintained export list.
 set -uo pipefail
 
-LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPTS_DIR="$(cd "$LIB_DIR/.." && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPTS_DIR/.." && pwd)"
-FILES_DIR="$PROJECT_ROOT/deploy/files"
+LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+SCRIPTS_DIR="$(cd "$LIB_DIR/.." && pwd -P)"
+SITE_DIRECTORY="$(cd "$SCRIPTS_DIR/.." && pwd -P)"
+PROJECT_ROOT="$(cd "$SITE_DIRECTORY/.." && pwd -P)"
+FILES_DIR="$SITE_DIRECTORY/deploy/files"
 
 . "$LIB_DIR/state.sh"
 
@@ -42,9 +43,25 @@ has_command() {
   command -v "$1" >/dev/null 2>&1
 }
 
+# Print the SHA-256 digest of a string as lowercase hex. One of these tools is
+# present on every supported system.
+sha256_hex() {
+  local value="${1:-}"
+  if has_command sha256sum; then
+    printf '%s' "$value" | sha256sum | awk '{print $1}'
+  elif has_command shasum; then
+    printf '%s' "$value" | shasum -a 256 | awk '{print $1}'
+  elif has_command openssl; then
+    printf '%s' "$value" | openssl dgst -sha256 | awk '{print $NF}'
+  else
+    printf 'no SHA-256 tool available (sha256sum, shasum or openssl)\n' >&2
+    return 1
+  fi
+}
+
 state_init() {
-  mkdir -p "$STATE_DIR"
-  [[ -f "$STATE_DIR/db.tsv" ]] || : > "$STATE_DIR/db.tsv"
+  mkdir -p -- "$STATE_DIR"
+  : >> "$STATE_DIR/db.tsv"
 }
 
 new_id() {

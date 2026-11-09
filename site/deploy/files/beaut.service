@@ -5,7 +5,7 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/.beaut
-ExecStart=%h/.beaut/deploy/files/start.sh
+ExecStart=%h/.beaut/site/deploy/files/start.sh
 Restart=always
 RestartSec=2
 

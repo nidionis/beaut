@@ -20,22 +20,23 @@ fresh host falls back to **`BOOTSTRAP_USER`**.
 Two install modes:
 
 1. **Privileged (default)**: **`BOOTSTRAP_USER`** (root recommended) applies
-   `deploy/files/bootstrap.sh` on a fresh host: creates `SERVICE_USER=beaut`,
+   `site/deploy/files/bootstrap.sh` on a fresh host: creates `SERVICE_USER=beaut`,
    authorizes your public key, installs the root-owned copy of the scripts, writes
    the root config from the schema with the service-user paths, and grants
    passwordless sudo to `SERVICE_USER`. Later deploys refresh that root copy in
-   place (`deploy/files/install_privileged.sh`).
+   place (`site/deploy/files/install_privileged.sh`).
 2. **User (`--no-root`)**: connect as **`SERVICE_USER`** with the key only and
    install under `$HOME/.beaut`; no sudo, no WireGuard, service started through
    user systemd / `setsid`.
 
-`/node` is rendered **on the server** from the uploaded `scripts/node.sh` and the
-deployed address: the client never uploads a prebuilt node artifact, and
+`/node` is rendered **on the server** from the uploaded `site/scripts/node.sh` and
+the deployed address: the client never uploads a prebuilt node artifact, and
 `curl … /node | sh` still works with zero client files.
 
 Everything after bootstrap runs as **`SERVICE_USER`**, key-only (no password),
-inside `$HOME/.beaut`: `scripts/`, `deploy/`, `state/`, `shared/`, plus the hidden
-personal tree. The start phase is `deploy/files/remote_install.sh`, run over SSH.
+inside `$HOME/.beaut`: `site/` (the published tree, including its builtins),
+`state/`, plus the hidden personal tree. The start phase is
+`site/deploy/files/remote_install.sh`, run over SSH.
 
 Privileged steps (WireGuard, network) run through the passwordless sudo grant of
 `SERVICE_USER` (`/etc/sudoers.d/<SERVICE_USER>`, validated with `visudo`). The
@@ -48,13 +49,13 @@ All defaults live in `config.env.example`, which doubles as the fallback schema;
 exported automatically — no export list to maintain.
 
 - `SERVICE_USER`, `BOOTSTRAP_USER`, `SSH_PRIVATE_KEY`: identity and first connection
-- `SERVICE_ROOT`, `STATE_DIR`, `PUBLISHED_ROOT`: layout and served tree
+- `SERVICE_ROOT`, `STATE_DIR`, `PUBLISHED_ROOT` (`SITE`/`DB_DIR` aliases): layout and served tree
 - `SERVER_HOST` / `HTTP_PORT`: control server address
 - `WG_PORT` / `WG_NETWORK` / `WG_SERVER_IP`: WireGuard
 - `DEVICE_DIRECTORY` / `DEVICE_REGISTRY`, `DEVICE_IDENTITY_DIRECTORY`: device identity
 - `INVITE_DIRECTORY` / `INVITE_REGISTRY`, `INVITE_DEFAULT_USES`, `INVITE_TTL_SECONDS`: invites
-- `SVR_MODE`, `SVR`, `SVR_SECRET`, `SVR_ROOT`, `SVR_PATH_FILE`: hidden personal tree
-- `JOURNAL_DIRECTORY`: Markdown journal
+- `SVR_MODE`, `SVR`, `SVR_SECRET`, `SVR_DIR`, `SVR_ROOT`, `SVR_PATH_FILE`, `SVR_DIR_FILE`: hidden personal tree
+- `JOURNAL_DIR`, `JOURNAL_ROOT`, `PERSO_DIR`, `PERSO_ROOT`, `JOURNAL_REMOTE`, `PERSO_REMOTE`, `JOURNAL_GIT`, `JOURNAL_EDITOR`, `SVR_BIN_DIR`, `SVR_INSTALL_PATH`: journal and install
 - `TOKEN_TTL_SECONDS`: token lifetime
 - `NOT_FOUND_BODY`, `ARCHIVE_MEMORY_DIVISOR`, `LOG_LEVEL`
 
@@ -63,8 +64,9 @@ exported automatically — no export list to maintain.
 ## HTTP server
 
 Listener chain: `socat` (preferred) → small C relay compiled from
-`scripts/http_server.c` (gcc) → fail. `scripts/http_server.sh` picks the first
-available listener and launches `scripts/http_server.c <HTTP_PORT> <handler>`.
+`site/scripts/http_server.c` (gcc) → fail. `site/scripts/http_server.sh` picks
+the first available listener and launches
+`site/scripts/http_server.c <HTTP_PORT> <handler>`.
 
 ## Routes HTTP
 
@@ -78,30 +80,39 @@ available listener and launches `scripts/http_server.c <HTTP_PORT> <handler>`.
 | `POST /signin` | accepts a device public key; a valid invite auto-accepts |
 | `GET /signin/<id>` | device status (`pending` / `approved` / `revoked`) |
 | `GET /door` | default server public key, endpoint and WireGuard network |
-| `GET /<hidden>/...` | hidden personal tree (`SVR_MODE` path) |
+| `GET /<hidden>/...` | hidden personal tree (`SVR_MODE` path), including `journal/` |
 | `GET /<path>` | `PUBLISHED_ROOT` tree: file, `index.html`, or `DEFAU*.sh` |
 
 The static route mirrors the tree: `/a/b/c` serves `$PUBLISHED_ROOT/a/b/c`; a
 directory serves `index.html`/`index.htm` when present, otherwise its first
-`DEFAU*.sh` (`/hello` → `$PUBLISHED_ROOT/hello/DEFAU*.sh`). Content type follows
+`DEFAU*.sh` (`/hello` → `$PUBLISHED_ROOT/hello/DEFAU*.sh`), and finally a
+generated folder listing. Content type follows
 the extension (HTML, CSS, JavaScript, JSON, Markdown, images); scripts and
 unknown files stay `text/plain`. Dot-prefixed path segments are never served, so
-`.git` stays private. Nothing is executed server-side and no directory listing is
-generated. The hidden tree is ordinary static files served under the secret
-prefix from `$SVR_ROOT`.
+`.git` stays private. Nothing is executed server-side. The hidden tree is
+ordinary static files served under the secret prefix from `$SVR_ROOT`.
+
+Text files in the published tree support `{{NAME}}` placeholders, replaced at
+serve time from configuration: `SERVER_HOST`, `HTTP_PORT`, `SERVICE_USER`,
+`WG_PORT`, `WG_NETWORK`, `WG_SERVER_IP`. The hidden personal tree is served
+verbatim.
 
 ## Public site tree
 
-The repository's `site/` directory is the source of truth for the public tree.
-`./deploy.sh` mirrors it into `$PUBLISHED_ROOT` (`~/.beaut/shared` on the live
-server) and removes entries it previously deployed when they disappear from the
-repository.
+The repository's `site/` directory is the source of truth **and** the published
+tree. `./deploy.sh` uploads it and swaps it into `$PUBLISHED_ROOT`
+(`~/.beaut/site` on the live server). There is no second copy of the builtins:
+`site/scripts/` and `site/deploy/` are served at `/scripts/` and `/deploy/`, and
+`/node` is generated inside `site/node/` after each sync. The repository root
+keeps `scripts` and `deploy` symlinks so local commands keep working.
 
 ```
 site/
   index.html          -> /                 (text/html)
   style.css           -> /style.css        (text/css)
   hello/DEFAULT.sh    -> /hello            (text/plain, curl /hello | sh)
+  scripts/            -> /scripts/         (builtins)
+  deploy/             -> /deploy/          (deployment files)
   notes/2026-01-02.md -> /notes/2026-01-02.md (text/markdown)
 ```
 
@@ -109,17 +120,27 @@ Resolution rules:
 
 - `/a/b/c` serves the file at `$PUBLISHED_ROOT/a/b/c`.
 - `/a/b` serves `a/b/index.html` (or `index.htm`) when present, otherwise the
-  first `a/b/DEFAU*.sh`. This keeps both real pages and script endpoints.
+  first `a/b/DEFAU*.sh`, otherwise a generated folder listing. This keeps both
+  real pages and script endpoints, and makes `/scripts/` and `/deploy/`
+  browsable.
+- The journal is not public: it lives inside the hidden tree and is reachable
+  only at `/<hidden>/journal/`.
+- Text pages can use `{{SERVER_HOST}}`, `{{HTTP_PORT}}` and the other public
+  configuration values; they are replaced when the file is served.
 - Content type comes from the extension; scripts and unknown files remain
   `text/plain`.
 - Dot-prefixed path segments are never served, so `.git`, `.env` and other
   hidden files stay private, even inside a repository checkout.
 
+The sync builds the complete new tree beside the live one and swaps it, so a
+failed deploy leaves the previous tree intact and anything removed from `site/`
+disappears from the published tree.
+
 A top-level `site/<name>` folder that contains `.git` is treated as a separate
 git repository: its origin URL is recorded, the folder is **not** uploaded, and
-the server clones it on the first deploy then runs `git pull --ff-only` on later
-deploys. It is served at `/<name>/` like any other tree. The origin must be
-reachable from the server (SSH or HTTPS).
+the server clones it (or fast-forwards an existing checkout) on deploy. It is
+served at `/<name>/` like any other tree. The origin must be reachable from the
+server (SSH or HTTPS).
 
 The hidden personal tree (`$SVR_ROOT`, URL `/<SVR_MODE path>`) uses the same
 file/default rules but is not part of `site/`; it stays personal and is never
@@ -132,11 +153,11 @@ curl -fsS http://$SERVER_HOST:$HTTP_PORT/node | sh
 ```
 
 Works on a machine with **zero beaut files**. At deploy time the server renders
-`shared/node/DEFAULT.sh` from the uploaded `scripts/node.sh` with
-`SERVER_HOST`/`HTTP_PORT` baked in and no sourced files; `scripts/node.sh` stays
-POSIX `sh` (the artifact is piped into `sh`, which is not bash everywhere). The
-node claims a token, fetches the command, runs it locally and POSTs the result to
-`/done/<token>`.
+`site/node/DEFAULT.sh` from the shipped `site/scripts/node.sh` with
+`SERVER_HOST`/`HTTP_PORT` baked in and no sourced files; `site/scripts/node.sh`
+stays POSIX `sh` (the artifact is piped into `sh`, which is not bash everywhere).
+The node claims a token, fetches the command, runs it locally and POSTs the
+result to `/done/<token>`.
 
 `/join` is **not published**. WireGuard joining stays a repo command:
 
@@ -179,24 +200,50 @@ server is the default door (`GET /door`), overridable with `DOOR_DEVICE_ID`.
 KNOCK stays a manual decision: the HTTP server only records a pending device; it
 never approves one by itself.
 
-## Hidden personal tree
+## Hidden personal tree and journal
 
-`scripts/svr.sh` creates a private static tree with a secret URL prefix:
+`scripts/svr.sh` owns a private tree whose URL prefix is secret and whose
+on-disk directory is hidden too:
 
 ```bash
-scripts/svr.sh init
+scripts/svr.sh init                 # tree + journal/perso git repositories
+scripts/svr.sh status               # mode, URL path, roots and remotes
 scripts/svr.sh path                 # -> /8randomchars
-scripts/svr.sh journal add "text"   # -> $SVR_ROOT/diary/YYYY-MM-DD.md
-scripts/svr.sh journal list [n]
-scripts/svr.sh journal show [date]
+scripts/svr.sh install              # journal/journal-perso in ~/.local/bin (+PATH)
+scripts/svr.sh sync                 # pull and push both journals
+scripts/svr.sh remote <url>         # set the journal origin (crash recovery)
+
+journal [subfolder] <name>          # installed reference-compatible command
+journal-perso [name]
 ```
 
-`SVR_MODE=random` (default) uses eight lowercase alphanumeric characters,
-persisted in `state/svr_path` with mode 600. `SVR_MODE=sha` derives eight
-characters from `sha256("beaut-svr:" + SVR_SECRET)`; `SVR_MODE=plain` uses an
-explicit `SVR` value. The tree is ordinary static files under `$SVR_ROOT`; no
-listing or manifest is generated, and requests outside the secret prefix never
-reach it.
+`SVR_DIR` chooses the on-disk directory name. When it is empty, a hidden
+`.svr-<8 random>` name is generated once and persisted in `state/svr_dir`
+(mode 600). The URL prefix is independent: `SVR_MODE=random` uses eight
+lowercase alphanumeric characters persisted in `state/svr_path`; `sha` derives
+them from `sha256("beaut-svr:" + SVR_SECRET)`; `plain` uses an explicit `SVR`
+value. `svr.sh init` also migrates the historical `$SERVICE_ROOT/svr` tree and
+its `diary/` directory to the new layout.
+
+The journal is a port of `~/.svr/usr/bin/journal`:
+
+```
+$SVR_ROOT/journal/YYYY/MM/DD/<subfolder>/<name>.md
+$SVR_ROOT/journal/<host>/<subfolder>/<name>.md   (hard-link view)
+$SVR_ROOT/journal/index.html                     (generated index)
+```
+
+Each new file starts with the reference header (YYMMDD, time, user, host,
+separator, relative path). `journal` pulls before editing, opens
+`JOURNAL_EDITOR` (default `$EDITOR`), then commits and pushes when the folder is
+a git repository. `JOURNAL_GIT=0` disables git. `JOURNAL_REMOTE` (or
+`svr.sh remote <url>`) sets `origin`; re-run it after a restore to point a
+recovered server at the new address. `journal-perso` behaves the same in
+`$SVR_ROOT/perso` with the `fouretout` default subfolder.
+
+Nothing in the tree is public: requests outside the secret prefix never reach
+it, and dot-prefixed segments such as `.git` are never served. The generated
+`index.html` makes `/<hidden>/journal/` browsable.
 
 ## Virtual secrets and paths
 
@@ -249,32 +296,32 @@ peer idempotence and the server-rendered node artifact. See `tests/README.md`.
 ## Files
 
 - `deploy.sh` — client orchestrator (auto-detected SERVICE_USER → BOOTSTRAP_USER fallback)
-- `deploy/files/bootstrap.sh` — first application as root
-- `deploy/files/install_privileged.sh` — refresh the root-owned scripts/config
-- `deploy/files/sync_site.sh` — mirror `site/`, clone/pull git-backed entries
-- `deploy/files/remote_install.sh` — user phase: systemd unit + server start
-- `deploy/files/beaut.service` — systemd user service
-- `deploy/files/start.sh` — server launcher (standalone file, never inline)
-- `scripts/http_server.sh` — listener chain (socat / C relay)
-- `scripts/http_server.c` — minimal C TCP relay (socat-enough)
-- `scripts/http_handler.sh` — routes + trees (dispatch), no execution
-- `scripts/lib/http.sh` — HTTP responses, parsing, URL-decoded form, client
-- `scripts/lib/state.sh` — TSV + token helpers
-- `scripts/node.sh` — self-contained POSIX node script (`| sh`)
-- `scripts/build_published_node.sh` — renders `/node` with the address baked in
-- `scripts/network.sh` — WireGuard/firewall/peer-sync command wrapper
-- `scripts/lib/wireguard.sh` — per-device keys, peer sync, client/server helpers
-- `scripts/device.sh` — device identity, invites, enrollment, approval CLI
-- `scripts/lib/devices.sh` — device registry, keys, addresses, trust, door
-- `scripts/lib/invites.sh` — hashed passMessage invites (uses/TTL/revocation)
-- `scripts/svr.sh` — hidden personal tree + Markdown journal CLI
-- `scripts/lib/personal_tree.sh` — secret path modes and static tree layout
-- `scripts/lib/journal.sh` — append-only daily Markdown journal
-- `scripts/lib/passphrase.sh` — words, random material, passphrases, secrets
-- `scripts/attribution.sh` — virtual secret/path attribution CLI
-- `scripts/lib/virtual_path.sh` — passphrase/path/registry algorithm
-- `scripts/lib/core.sh` — paths/config/log/state helpers
-- `site/` — public site tree deployed to `$PUBLISHED_ROOT`
+- `site/deploy/files/bootstrap.sh` — first application as root
+- `site/deploy/files/install_privileged.sh` — refresh the root-owned scripts/config
+- `site/deploy/files/sync_site.sh` — swap `site/`, clone/fast-forward git-backed entries
+- `site/deploy/files/remote_install.sh` — user phase: systemd unit + server start
+- `site/deploy/files/beaut.service` — systemd user service
+- `site/deploy/files/start.sh` — server launcher (standalone file, never inline)
+- `site/scripts/http_server.sh` — listener chain (socat / C relay)
+- `site/scripts/http_server.c` — minimal C TCP relay (socat-enough)
+- `site/scripts/http_handler.sh` — routes + trees (dispatch), no execution
+- `site/scripts/lib/http.sh` — HTTP responses, redirects, parsing, form, client- `site/scripts/lib/state.sh` — TSV + token helpers
+- `site/scripts/node.sh` — self-contained POSIX node script (`| sh`)
+- `site/scripts/build_published_node.sh` — renders `/node` with the address baked in
+- `site/scripts/network.sh` — WireGuard/firewall/peer-sync command wrapper
+- `site/scripts/lib/wireguard.sh` — per-device keys, peer sync, client/server helpers
+- `site/scripts/device.sh` — device identity, invites, enrollment, approval CLI
+- `site/scripts/lib/devices.sh` — device registry, keys, addresses, trust, door
+- `site/scripts/lib/invites.sh` — hashed passMessage invites (uses/TTL/revocation)
+- `site/scripts/svr.sh` — hidden tree, git journal and command installer
+- `site/scripts/journal_cli.sh` — installed `journal` / `journal-perso` command
+- `site/scripts/lib/personal_tree.sh` — hidden directory and secret URL path modes
+- `site/scripts/lib/journal.sh` — reference-compatible date tree, host view, git
+- `site/scripts/lib/passphrase.sh` — words, random material, passphrases, secrets
+- `site/scripts/attribution.sh` — virtual secret/path attribution CLI
+- `site/scripts/lib/virtual_path.sh` — passphrase/path/registry algorithm
+- `site/scripts/lib/core.sh` — paths/config/log/state helpers
+- `scripts`, `deploy` — root symlinks into `site/` for local commands
 - `tests/` — isolated test subproject (`tests/run.sh`)
 - `state/db.tsv` — tokens, tasks, results
-- `shared/` — published HTTP tree
+- `site/` — published HTTP tree (`$PUBLISHED_ROOT`)

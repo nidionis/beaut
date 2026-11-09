@@ -24,4 +24,4 @@ start_with_c() {
   exec "$binary" "$HTTP_PORT" "$SCRIPT_DIR/http_handler.sh"
 }
 
-if start_with_socat; then :; elif start_with_c; then :; else die "no TCP listener ready: install socat or gcc (scripts/http_server.c)"; fi
+start_with_socat || start_with_c || die "no TCP listener ready: install socat or gcc (scripts/http_server.c)"

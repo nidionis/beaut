@@ -34,12 +34,9 @@ trap cleanup_payload EXIT
 if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
   useradd -m -s /bin/bash "$SERVICE_USER"
 fi
-home_dir="$(getent passwd "$SERVICE_USER" | cut -d: -f6)"
-login_shell="$(getent passwd "$SERVICE_USER" | cut -d: -f7)"
+IFS=: read -r _ _ _ _ _ home_dir login_shell _ < <(getent passwd "$SERVICE_USER")
 [[ -n "$home_dir" ]] || die "home directory not found for $SERVICE_USER"
-if [[ "$login_shell" != "/bin/bash" ]]; then
-  usermod -s /bin/bash "$SERVICE_USER"
-fi
+[[ "$login_shell" == "/bin/bash" ]] || usermod -s /bin/bash "$SERVICE_USER"
 primary_group="$(id -gn "$SERVICE_USER")"
 
 if [[ "$home_dir" != "$TARGET_HOME" ]]; then
@@ -67,8 +64,8 @@ chown -R "$SERVICE_USER:$primary_group" "$home_dir/.ssh"
 chmod 700 "$home_dir/.ssh"
 chmod 600 "$authorized_keys_file"
 
-# 3. single tree: $HOME/.beaut (scripts, deploy, state, shared)
-for directory in "$home_dir/.beaut" "$home_dir/.beaut/state" "$home_dir/.beaut/shared"; do
+# 3. single tree: $HOME/.beaut (site, state)
+for directory in "$home_dir/.beaut" "$home_dir/.beaut/state" "$home_dir/.beaut/site"; do
   install -d -m 755 -o "$SERVICE_USER" -g "$primary_group" "$directory"
 done
 chmod 700 "$home_dir/.beaut/state"
@@ -78,18 +75,19 @@ chmod 700 "$home_dir/.beaut/state"
 WORK_DIR="$(mktemp -d)"
 tar xzf "$PAYLOAD_ARCHIVE" -C "$WORK_DIR"
 install -d -m 755 -o root -g root "$ROOT_LIB_DIR"
-rm -rf -- "$ROOT_LIB_DIR/scripts"
-cp -a "$WORK_DIR/scripts" "$ROOT_LIB_DIR/scripts"
+rm -rf -- "$ROOT_LIB_DIR/site"
+install -d -m 755 -o root -g root "$ROOT_LIB_DIR/site"
+cp -a "$WORK_DIR/site/scripts" "$ROOT_LIB_DIR/site/scripts"
 # Overrides first, then the schema: the example uses ${VAR:-default}, so the
 # service-user paths win and every derived path (STATE_DIR, DEVICE_DIRECTORY,
 # SVR_ROOT, ...) is computed from them.
 printf 'SERVICE_ROOT=%s\nSTATE_DIR=%s\nPUBLISHED_ROOT=%s\n' \
-  "$TARGET_HOME/.beaut" "$TARGET_HOME/.beaut/state" "$TARGET_HOME/.beaut/shared" \
+  "$TARGET_HOME/.beaut" "$TARGET_HOME/.beaut/state" "$TARGET_HOME/.beaut/site" \
   > "$ROOT_LIB_DIR/config.env"
 cat "$WORK_DIR/config.env.example" >> "$ROOT_LIB_DIR/config.env"
 chown -R root:root "$ROOT_LIB_DIR"
 chmod -R go-w "$ROOT_LIB_DIR"
-find "$ROOT_LIB_DIR/scripts" -type f -name '*.sh' -exec chmod 755 {} +
+find "$ROOT_LIB_DIR/site/scripts" -type f -name '*.sh' -exec chmod 755 {} +
 
 # 5. sudo grant for the service user (full, passwordless; validated with visudo)
 install -d -m 755 /etc/sudoers.d
