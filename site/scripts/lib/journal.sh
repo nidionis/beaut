@@ -17,9 +17,7 @@ JOURNAL_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if ! declare -F has_command >/dev/null 2>&1; then
   . "$JOURNAL_LIB_DIR/core.sh"
 fi
-if ! declare -F personal_tree_root >/dev/null 2>&1; then
-  . "$JOURNAL_LIB_DIR/personal_tree.sh"
-fi
+
 
 journal_root() {
   local name
@@ -28,12 +26,15 @@ journal_root() {
   elif [[ -n "${JOURNAL_DIRECTORY:-}" ]]; then
     printf '%s' "$JOURNAL_DIRECTORY"
   else
-    # JOURNAL_DIR is a path component, not an absolute path. This also keeps
-    # unrelated environment values (for example ~/.svr's JOURNAL_DIR) from
-    # redirecting beaut's journal.
     name="${JOURNAL_DIR:-journal}"
     journal_validate_component "$name" || name=journal
-    printf '%s/%s' "$(personal_tree_root)" "$name"
+    if [[ -n "${SVR_ROOT:-}" ]]; then
+      printf '%s/%s' "$SVR_ROOT" "$name"
+    elif declare -F personal_tree_root >/dev/null 2>&1; then
+      printf '%s/%s' "$(personal_tree_root)" "$name"
+    else
+      printf '%s/%s' "${SERVICE_ROOT:-${HOME:-}/.beaut}/.svr" "$name"
+    fi
   fi
 }
 
@@ -44,7 +45,13 @@ journal_perso_root() {
   else
     name="${PERSO_DIR:-perso}"
     journal_validate_component "$name" || name=perso
-    printf '%s/%s' "$(personal_tree_root)" "$name"
+    if [[ -n "${SVR_ROOT:-}" ]]; then
+      printf '%s/%s' "$SVR_ROOT" "$name"
+    elif declare -F personal_tree_root >/dev/null 2>&1; then
+      printf '%s/%s' "$(personal_tree_root)" "$name"
+    else
+      printf '%s/%s' "${SERVICE_ROOT:-${HOME:-}/.beaut}/.svr" "$name"
+    fi
   fi
 }
 
@@ -229,7 +236,7 @@ journal_remote_resolve() {
       }
       base="${JOURNAL_REMOTE_ROOT:-}"
       if [[ -z "$base" ]]; then
-        base="$(personal_tree_root 2>/dev/null || echo "${SERVICE_ROOT:-$HOME/.${SERVICE_USER:-beaut}}/.svr")"
+        base="${SVR_ROOT:-${SERVICE_ROOT:-$HOME/.${SERVICE_USER:-beaut}}/.svr}"
       fi
       local port="${JOURNAL_SSH_PORT:-${SSH_PORT:-}}"
       local repo_path="$base/$(basename "$root")"

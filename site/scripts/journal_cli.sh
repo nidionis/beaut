@@ -20,7 +20,6 @@ JOURNAL_CLI_SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "
 JOURNAL_CLI_DIR="$(cd "$(dirname "$JOURNAL_CLI_SELF")" && pwd)"
 
 . "$JOURNAL_CLI_DIR/lib/core.sh"
-. "$JOURNAL_CLI_DIR/lib/personal_tree.sh"
 . "$JOURNAL_CLI_DIR/lib/journal.sh"
 load_config
 

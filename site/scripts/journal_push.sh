@@ -5,7 +5,6 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib/core.sh"
-. "$SCRIPT_DIR/lib/personal_tree.sh"
 . "$SCRIPT_DIR/lib/journal.sh"
 load_config
 
