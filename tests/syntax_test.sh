@@ -10,7 +10,7 @@ cd "$PROJECT_ROOT"
 for file in \
   deploy.sh beaut.sh \
   scripts/*.sh scripts/lib/*.sh \
-  deploy/files/*.sh \
+  deploy/*.sh \
   tests/*.sh tests/lib/*.sh
 do
   [[ -f "$file" ]] || continue

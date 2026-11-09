@@ -112,7 +112,24 @@ personal_tree_initialize >/dev/null
 journal_initialize
 journal_add 'first entry' >/dev/null
 
+# --- scripts mirrored through the hidden path ------------------------------
+mkdir -p "$PUBLISHED_ROOT/scripts"
+printf '#!/bin/sh\necho site script\n' > "$PUBLISHED_ROOT/scripts/hello.sh"
+ln -sfn "$(personal_tree_root)" "$PUBLISHED_ROOT/oldhidden"
+personal_tree_link_site
+assert_success "hidden tree is mirrored in the site tree" \
+  test -L "$PUBLISHED_ROOT/hidden01"
+assert_success "scripts are linked into the hidden tree" \
+  test -L "$(personal_tree_root)/scripts"
+assert_file_missing "$PUBLISHED_ROOT/oldhidden" "stale mirrors are removed"
+
 server_start "$PUBLISHED_ROOT" "$STATE_DIR"
+
+http_get '/hidden01/scripts/hello.sh'
+assert_status 200 "$HTTP_STATUS" "scripts are served under the hidden path"
+assert_contains "$HTTP_BODY" 'site script' "hidden script content"
+http_get '/scripts/hello.sh'
+assert_status 200 "$HTTP_STATUS" "scripts stay public"
 
 http_get "/hidden01/journal/2026/01/02/notes/notes.md"
 assert_status 200 "$HTTP_STATUS" "journal is served under the hidden path"

@@ -206,6 +206,46 @@ printf 'journal: journal/YYYY/MM/DD/<subfolder>/<name>.md\n'
 DEFAULT_SCRIPT
 }
 
+personal_tree_published_root() {
+  printf '%s' "${PUBLISHED_ROOT:-${SITE:-}}"
+}
+
+# Mirror the hidden tree and the scripts in the published site tree:
+#   $PUBLISHED_ROOT/<hidden>  -> $SVR_ROOT
+#   $SVR_ROOT/scripts         -> $PUBLISHED_ROOT/scripts
+# The first makes the structure visible where the site is served; the second
+# makes /<hidden>/scripts/ resolve (the handler also allows this link target).
+personal_tree_link_site() {
+  local root published hidden link target root_real
+  root="$(personal_tree_root)" || return 1
+  published="$(personal_tree_published_root)"
+  [[ -n "$published" && -d "$published" ]] || return 0
+  hidden="$(personal_tree_current_path)" || return 1
+  [[ -n "$hidden" && "$hidden" != "scripts" && "$hidden" != "deploy" ]] || return 0
+  root_real="$(realpath -m -- "$root" 2>/dev/null || printf '%s' "$root")"
+
+  # Drop only our own stale mirrors (symlinks that resolve to the tree).
+  for link in "$published"/*; do
+    [[ -L "$link" ]] || continue
+    target="$(realpath -m -- "$link" 2>/dev/null || true)"
+    [[ "$target" == "$root_real" ]] && rm -f -- "$link"
+  done
+
+  if [[ -e "$published/$hidden" && ! -L "$published/$hidden" ]]; then
+    log warn "site path $hidden already exists; not linking the hidden tree"
+  else
+    ln -sfn -- "$root" "$published/$hidden"
+  fi
+
+  if [[ -d "$published/scripts" ]]; then
+    if [[ -e "$root/scripts" && ! -L "$root/scripts" ]]; then
+      log warn "$root/scripts exists; not replacing it"
+    else
+      ln -sfn -- "$published/scripts" "$root/scripts"
+    fi
+  fi
+}
+
 personal_tree_initialize() {
   local root path notes default_script
   root="$(personal_tree_root)" || return 1

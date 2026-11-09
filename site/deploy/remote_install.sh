@@ -4,7 +4,7 @@
 set -euo pipefail
 
 mkdir -p ~/.config/systemd/user
-cp -f ~/.beaut/site/deploy/files/beaut.service ~/.config/systemd/user/beaut.service
+cp -f ~/.beaut/site/deploy/beaut.service ~/.config/systemd/user/beaut.service
 # `enable --now` does not restart an already-running unit. An upgrade must
 # restart so systemd re-reads ExecStart and the handler picks up the new tree
 # instead of keeping the previous release's environment and scripts.
@@ -15,7 +15,7 @@ if command -v systemctl >/dev/null 2>&1 \
   echo "beaut user service is active"
 else
   pkill -f "http_server.sh" 2>/dev/null || true
-  setsid bash ~/.beaut/site/deploy/files/start.sh \
+  setsid bash ~/.beaut/site/deploy/start.sh \
     > ~/.beaut/state/http.log 2>&1 < /dev/null &
   echo "server started through setsid (see state/http.log)"
 fi

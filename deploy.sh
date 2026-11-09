@@ -8,7 +8,7 @@
 # Install modes:
 #   privileged (default): SERVICE_USER is used directly when its key and
 #     passwordless sudo already work. A fresh host falls back to BOOTSTRAP_USER,
-#     which applies deploy/files/bootstrap.sh: creates SERVICE_USER, authorizes
+#     which applies deploy/bootstrap.sh: creates SERVICE_USER, authorizes
 #     its key, installs the root-owned copy, writes the sudo grant, starts the
 #     service. WireGuard is configured through the sudo grant.
 #   user (--no-root): connect as SERVICE_USER with the key only, install under
@@ -151,7 +151,7 @@ upload_site() {
     tar xzf payload.tgz
     rm -f payload.tgz
     cd ~/.beaut
-    bash ~/$remote_staging/deploy/files/sync_site.sh ~/$remote_staging ~/$remote_repositories
+    bash ~/$remote_staging/deploy/sync_site.sh ~/$remote_staging ~/$remote_repositories
     rm -rf ~/$remote_staging ~/$remote_repositories" \
     || die "cannot apply the site tree"
 }
@@ -180,7 +180,7 @@ publish_tree() {
 # service user already has sudo, so this does not widen its rights; it keeps
 # network.sh/wireguard.sh current between deploys.
 install_privileged_scripts() {
-  as_service_user "sudo -n env SERVICE_HOME=\"\$HOME\" bash ~/.beaut/site/deploy/files/install_privileged.sh" \
+  as_service_user "sudo -n env SERVICE_HOME=\"\$HOME\" bash ~/.beaut/site/deploy/install_privileged.sh" \
     || die "cannot refresh the privileged scripts"
 }
 

@@ -8,7 +8,7 @@ LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SCRIPTS_DIR="$(cd "$LIB_DIR/.." && pwd -P)"
 SITE_DIRECTORY="$(cd "$SCRIPTS_DIR/.." && pwd -P)"
 PROJECT_ROOT="$(cd "$SITE_DIRECTORY/.." && pwd -P)"
-FILES_DIR="$SITE_DIRECTORY/deploy/files"
+FILES_DIR="$SITE_DIRECTORY/deploy"
 
 . "$LIB_DIR/state.sh"
 

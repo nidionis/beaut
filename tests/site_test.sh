@@ -17,20 +17,20 @@ mkdir -p "$site_source/hello" "$site_source/scripts" "$published_root"
 : > "$repository_list"
 
 printf '<!doctype html>\n<p>home</p>\n' > "$site_source/index.html"
-printf '#!/bin/sh\necho hello\n' > "$site_source/hello/DEFAULT.sh"
+printf '<!doctype html><p>hello</p>\n' > "$site_source/hello/index.html"
 printf '#!/bin/sh\n' > "$site_source/scripts/DEFAULT.sh"
 printf 'body { color: red; }\n' > "$site_source/style.css"
 printf 'node_modules\n' > "$site_source/.gitignore"
 
 run_sync() {
   PUBLISHED_ROOT="$published_root" LOG_LEVEL=error \
-    bash "$PROJECT_ROOT/site/deploy/files/sync_site.sh" "${1:-$site_source}" "$repository_list"
+    bash "$PROJECT_ROOT/site/deploy/sync_site.sh" "${1:-$site_source}" "$repository_list"
 }
 
 # --- plain entries ----------------------------------------------------------
 run_sync
 assert_file_exists "$published_root/index.html" "site home is deployed"
-assert_file_exists "$published_root/hello/DEFAULT.sh" "site directory is deployed"
+assert_file_exists "$published_root/hello/index.html" "site directory is deployed"
 assert_file_exists "$published_root/scripts/DEFAULT.sh" "builtins are part of the site"
 assert_file_exists "$published_root/style.css" "site file is deployed"
 assert_equal "body { color: red; }" "$(cat "$published_root/style.css")" "site file content"
@@ -42,7 +42,7 @@ rm -f "$site_source/style.css"
 run_sync
 assert_file_missing "$published_root/style.css" "removed site file is pruned"
 assert_file_missing "$published_root/stale.txt" "unmanaged file is pruned"
-assert_file_exists "$published_root/hello/DEFAULT.sh" "other entries survive"
+assert_file_exists "$published_root/hello/index.html" "other entries survive"
 
 # --- reserved and invalid names ---------------------------------------------
 mkdir -p "$sandbox/bad-site/node"

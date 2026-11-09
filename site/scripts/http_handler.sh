@@ -103,11 +103,16 @@ serve_directory_index() {
 
 serve_tree() {
   local requested_path="$1" root_directory="${2:-${PUBLISHED_ROOT:-}}"
-  local serve_mode="${3:-render}" real_root target directory
+  local serve_mode="${3:-render}" extra_root="${4:-}"
+  local real_root real_extra target directory
   if [[ -z "$root_directory" || ! -d "$root_directory" ]]; then
     not_found; return
   fi
   real_root="$(realpath -m -- "$root_directory" 2>/dev/null || printf '%s' "$root_directory")"
+  real_extra=''
+  if [[ -n "$extra_root" && -d "$extra_root" ]]; then
+    real_extra="$(realpath -m -- "$extra_root" 2>/dev/null || printf '%s' "$extra_root")"
+  fi
 
   case "$requested_path" in
     *..*|*\\*) not_found; return ;;
@@ -115,8 +120,15 @@ serve_tree() {
   path_has_hidden_segment "$requested_path" && { not_found; return; }
 
   target="$(realpath -m -- "$root_directory/$requested_path" 2>/dev/null || true)"
-  if [[ -z "$target" || ( "$target" != "$real_root" && "$target" != "$real_root"/* ) ]]; then
+  if [[ -z "$target" ]]; then
     not_found; return
+  fi
+  # The target must stay inside the served root. A hidden-tree link may also
+  # point into the public tree (for example <hidden>/scripts -> site/scripts).
+  if [[ "$target" != "$real_root" && "$target" != "$real_root"/* ]]; then
+    if [[ -z "$real_extra" || ( "$target" != "$real_extra" && "$target" != "$real_extra"/* ) ]]; then
+      not_found; return
+    fi
   fi
 
   if [[ -d "$target" ]]; then
@@ -257,7 +269,7 @@ case "$url_path" in
     ;;
   *)
     if personal_tree_relative_path="$(personal_tree_match_path "$url_path" 2>/dev/null)"; then
-      serve_tree "$personal_tree_relative_path" "$(personal_tree_root)" raw
+      serve_tree "$personal_tree_relative_path" "$(personal_tree_root)" raw "${PUBLISHED_ROOT:-}"
     else
       serve_tree "$url_path"
     fi

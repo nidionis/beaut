@@ -42,7 +42,7 @@ assert_contains "$deploy_text" 'sync_site.sh' "site tree is applied on the serve
 assert_contains "$deploy_text" "--exclude='.git'" "git repositories are not uploaded as files"
 assert_not_contains "$deploy_text" 'shared/' "the published tree is the site tree, not a copy"
 
-remote_install_text="$(cat "$PROJECT_ROOT/site/deploy/files/remote_install.sh")"
+remote_install_text="$(cat "$PROJECT_ROOT/site/deploy/remote_install.sh")"
 assert_contains "$remote_install_text" 'systemctl --user restart beaut.service' \
   "upgrades restart the running service"
 remote_run_line="$(printf '%s\n' "$deploy_text" | grep '^remote_run()')"
@@ -52,10 +52,10 @@ assert_not_contains "$remote_run_line" 'ssh -n' "stdin-fed remote scripts do not
 # --- tracked public site ----------------------------------------------------
 assert_file_exists "$PROJECT_ROOT/site/index.html" "site home is tracked"
 assert_file_exists "$PROJECT_ROOT/site/style.css" "site stylesheet is tracked"
-assert_file_exists "$PROJECT_ROOT/site/hello/DEFAULT.sh" "site script example is tracked"
+assert_file_exists "$PROJECT_ROOT/site/hello/index.html" "site hello page is tracked"
 assert_file_missing "$PROJECT_ROOT/site/journal/index.html" "no public journal page is tracked"
 assert_file_exists "$PROJECT_ROOT/site/scripts/http_handler.sh" "builtins live in the site tree"
-assert_file_exists "$PROJECT_ROOT/site/deploy/files/sync_site.sh" "site sync script exists"
+assert_file_exists "$PROJECT_ROOT/site/deploy/sync_site.sh" "site sync script exists"
 assert_file_exists "$PROJECT_ROOT/site/scripts/journal_cli.sh" "journal command is tracked"
 
 handler_text="$(cat "$PROJECT_ROOT/site/scripts/http_handler.sh")"
@@ -69,15 +69,16 @@ svr_text="$(cat "$PROJECT_ROOT/site/scripts/svr.sh")"
 assert_contains "$svr_text" 'install)' "svr install is available"
 assert_contains "$svr_text" 'journal-perso' "the personal journal command is wired"
 assert_contains "$svr_text" 'journal_remote_set' "git remotes are configurable"
+assert_contains "$svr_text" 'personal_tree_link_site' "the hidden tree is mirrored in the site tree"
 
 # --- configuration order ----------------------------------------------------
-install_text="$(cat "$PROJECT_ROOT/site/deploy/files/install_privileged.sh")"
+install_text="$(cat "$PROJECT_ROOT/site/deploy/install_privileged.sh")"
 override_line="$(printf '%s\n' "$install_text" | grep -n 'SERVICE_ROOT=%s' | cut -d: -f1)"
 schema_line="$(printf '%s\n' "$install_text" | grep -n 'config.env.example" >>' | cut -d: -f1)"
 assert_true_order="$(printf '%s\n' "$override_line $schema_line" | awk '{print ($1<$2)?"yes":"no"}')"
 assert_equal 'yes' "$assert_true_order" "root overrides are written before the schema"
 
-bootstrap_text="$(cat "$PROJECT_ROOT/site/deploy/files/bootstrap.sh")"
+bootstrap_text="$(cat "$PROJECT_ROOT/site/deploy/bootstrap.sh")"
 bootstrap_override_line="$(printf '%s\n' "$bootstrap_text" | grep -n 'SERVICE_ROOT=%s' | cut -d: -f1)"
 bootstrap_schema_line="$(printf '%s\n' "$bootstrap_text" | grep -n 'config.env.example" >>' | cut -d: -f1)"
 bootstrap_order="$(printf '%s\n' "$bootstrap_override_line $bootstrap_schema_line" | awk '{print ($1<$2)?"yes":"no"}')"
@@ -97,7 +98,7 @@ SVR_ROOT=${SVR_ROOT:-}
 SCHEMA
 
 SERVICE_HOME="$service_home" ROOT_LIBRARY_DIRECTORY="$root_library" \
-  bash "$PROJECT_ROOT/site/deploy/files/install_privileged.sh" >/dev/null 2>&1
+  bash "$PROJECT_ROOT/site/deploy/install_privileged.sh" >/dev/null 2>&1
 assert_file_exists "$root_library/site/scripts/refresh.sh" "privileged script copy"
 assert_file_exists "$root_library/site/scripts/lib/helper.sh" "privileged library copy"
 assert_equal '755' "$(stat -c '%a' "$root_library/site/scripts/refresh.sh")" "privileged scripts are executable"

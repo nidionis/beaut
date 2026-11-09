@@ -47,7 +47,7 @@ because some systems mount `/tmp` `noexec`.
 - Each test owns a `mktemp -d` sandbox and stops its server in `EXIT` trap.
 - `handler_test.sh` starts the C relay directly; the handler is the real
   `scripts/http_handler.sh`, with `STATE_DIR` and `PUBLISHED_ROOT` overridden.
-- `site_test.sh` runs `site/deploy/files/sync_site.sh` against a temporary tree
+- `site_test.sh` runs `site/deploy/sync_site.sh` against a temporary tree
   and a local bare git repository, so it never touches the real server.
 - `network_test.sh` replaces `wg`, `ip` and `nft` with tiny fakes in a temporary
   `PATH`, proving key reuse and rule idempotence without touching the host.

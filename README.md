@@ -20,11 +20,11 @@ fresh host falls back to **`BOOTSTRAP_USER`**.
 Two install modes:
 
 1. **Privileged (default)**: **`BOOTSTRAP_USER`** (root recommended) applies
-   `site/deploy/files/bootstrap.sh` on a fresh host: creates `SERVICE_USER=beaut`,
+   `site/deploy/bootstrap.sh` on a fresh host: creates `SERVICE_USER=beaut`,
    authorizes your public key, installs the root-owned copy of the scripts, writes
    the root config from the schema with the service-user paths, and grants
    passwordless sudo to `SERVICE_USER`. Later deploys refresh that root copy in
-   place (`site/deploy/files/install_privileged.sh`).
+   place (`site/deploy/install_privileged.sh`).
 2. **User (`--no-root`)**: connect as **`SERVICE_USER`** with the key only and
    install under `$HOME/.beaut`; no sudo, no WireGuard, service started through
    user systemd / `setsid`.
@@ -36,7 +36,7 @@ the deployed address: the client never uploads a prebuilt node artifact, and
 Everything after bootstrap runs as **`SERVICE_USER`**, key-only (no password),
 inside `$HOME/.beaut`: `site/` (the published tree, including its builtins),
 `state/`, plus the hidden personal tree. The start phase is
-`site/deploy/files/remote_install.sh`, run over SSH.
+`site/deploy/remote_install.sh`, run over SSH.
 
 Privileged steps (WireGuard, network) run through the passwordless sudo grant of
 `SERVICE_USER` (`/etc/sudoers.d/<SERVICE_USER>`, validated with `visudo`). The
@@ -85,8 +85,7 @@ the first available listener and launches
 
 The static route mirrors the tree: `/a/b/c` serves `$PUBLISHED_ROOT/a/b/c`; a
 directory serves `index.html`/`index.htm` when present, otherwise its first
-`DEFAU*.sh` (`/hello` → `$PUBLISHED_ROOT/hello/DEFAU*.sh`), and finally a
-generated folder listing. Content type follows
+`DEFAU*.sh`, and finally a generated folder listing. Content type follows
 the extension (HTML, CSS, JavaScript, JSON, Markdown, images); scripts and
 unknown files stay `text/plain`. Dot-prefixed path segments are never served, so
 `.git` stays private. Nothing is executed server-side. The hidden tree is
@@ -110,11 +109,21 @@ keeps `scripts` and `deploy` symlinks so local commands keep working.
 site/
   index.html          -> /                 (text/html)
   style.css           -> /style.css        (text/css)
-  hello/DEFAULT.sh    -> /hello            (text/plain, curl /hello | sh)
-  scripts/            -> /scripts/         (builtins)
+  hello/index.html    -> /hello            (text/html; curl /hello | sh still works)
+  scripts/            -> /scripts/         (builtins, also linked under <hidden>)
   deploy/             -> /deploy/          (deployment files)
   notes/2026-01-02.md -> /notes/2026-01-02.md (text/markdown)
 ```
+
+After `svr.sh init`, the published tree also carries the hidden structure:
+
+```
+$PUBLISHED_ROOT/<hidden>  -> $SVR_ROOT
+$SVR_ROOT/scripts         -> $PUBLISHED_ROOT/scripts
+```
+
+So `/<hidden>/` shows the personal tree and `/<hidden>/scripts/` serves the same
+builtins as `/scripts/`, which stays public. `/scripts/` is not moved or hidden.
 
 Resolution rules:
 
@@ -248,7 +257,10 @@ behaves the same in `$SVR_ROOT/perso` with the `fouretout` default subfolder.
 
 Nothing in the tree is public: requests outside the secret prefix never reach
 it, and dot-prefixed segments such as `.git` are never served. The generated
-`index.html` makes `/<hidden>/journal/` browsable.
+`index.html` makes `/<hidden>/journal/` browsable. `svr.sh init` mirrors the
+tree as `$PUBLISHED_ROOT/<hidden>` and links `$SVR_ROOT/scripts` to the public
+`$PUBLISHED_ROOT/scripts`, so the structure is visible in the site tree without
+making the journal public.
 
 ## Virtual secrets and paths
 
@@ -301,16 +313,17 @@ peer idempotence and the server-rendered node artifact. See `tests/README.md`.
 ## Files
 
 - `deploy.sh` — client orchestrator (auto-detected SERVICE_USER → BOOTSTRAP_USER fallback)
-- `site/deploy/files/bootstrap.sh` — first application as root
-- `site/deploy/files/install_privileged.sh` — refresh the root-owned scripts/config
-- `site/deploy/files/sync_site.sh` — swap `site/`, clone/fast-forward git-backed entries
-- `site/deploy/files/remote_install.sh` — user phase: systemd unit + server start
-- `site/deploy/files/beaut.service` — systemd user service
-- `site/deploy/files/start.sh` — server launcher (standalone file, never inline)
+- `site/deploy/bootstrap.sh` — first application as root
+- `site/deploy/install_privileged.sh` — refresh the root-owned scripts/config
+- `site/deploy/sync_site.sh` — swap `site/`, clone/fast-forward git-backed entries
+- `site/deploy/remote_install.sh` — user phase: systemd unit + server start
+- `site/deploy/beaut.service` — systemd user service
+- `site/deploy/start.sh` — server launcher (standalone file, never inline)
 - `site/scripts/http_server.sh` — listener chain (socat / C relay)
 - `site/scripts/http_server.c` — minimal C TCP relay (socat-enough)
 - `site/scripts/http_handler.sh` — routes + trees (dispatch), no execution
-- `site/scripts/lib/http.sh` — HTTP responses, redirects, parsing, form, client- `site/scripts/lib/state.sh` — TSV + token helpers
+- `site/scripts/lib/http.sh` — HTTP responses, redirects, parsing, form, client
+- `site/scripts/lib/state.sh` — TSV + token helpers
 - `site/scripts/node.sh` — self-contained POSIX node script (`| sh`)
 - `site/scripts/build_published_node.sh` — renders `/node` with the address baked in
 - `site/scripts/network.sh` — WireGuard/firewall/peer-sync command wrapper

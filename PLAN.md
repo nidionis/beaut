@@ -45,17 +45,17 @@ Aucune bibliothèque de parsing HTTP. On lit uniquement :
 ## Déploiement (`deploy.sh`) — identité auto-détectée
 1. Le déploiement prouve d'abord que **`SERVICE_USER`** s'authentifie par clé et
    possède `sudo -n`. Si oui, aucun bootstrap n'est relancé. Sinon seulement,
-   **`BOOTSTRAP_USER`** (root conseillé) applique `site/deploy/files/bootstrap.sh` :
+   **`BOOTSTRAP_USER`** (root conseillé) applique `site/deploy/bootstrap.sh` :
    crée `SERVICE_USER=beaut`, autorise la clé publique, installe la **copie
    root:root** des scripts, écrit la config racine (surcharges d'abord, puis le
    schéma), accorde le sudo passwordless à `SERVICE_USER`.
 2. Tout le reste se fait en **`SERVICE_USER`**, par clé uniquement (`BatchMode`,
    `publickey`), sans mot de passe, dans `$HOME/.beaut` : `site/` (l'arborescence
    publiée avec ses builtins), `state/`. Le démarrage du service est piloté par
-   `site/deploy/files/remote_install.sh` (exécuté via `remote_run`).
+   `site/deploy/remote_install.sh` (exécuté via `remote_run`).
 
 - Les déploiements suivants rafraîchissent la copie root via
-  `site/deploy/files/install_privileged.sh` (toujours root:root, non inscriptible
+  `site/deploy/install_privileged.sh` (toujours root:root, non inscriptible
   par l'utilisateur de service).
 - `sudo` passwordless est accordé à `SERVICE_USER` via `/etc/sudoers.d/<SERVICE_USER>`
   (règle `ALL=(ALL) NOPASSWD: ALL`, validée avec `visudo`) : l'accès réseau/WireGuard
@@ -71,13 +71,13 @@ Aucune bibliothèque de parsing HTTP. On lit uniquement :
   `/join` n'est plus publié ; `site/scripts/wireguard_join.sh` et
   `site/scripts/device.sh join` restent des commandes du dépôt.
 - Le dossier `site/` est archivé (hors `.git`) puis appliqué par
-  `site/deploy/files/sync_site.sh` vers `$PUBLISHED_ROOT` (`~/.beaut/site`) ;
+  `site/deploy/sync_site.sh` vers `$PUBLISHED_ROOT` (`~/.beaut/site`) ;
   l'ancienne arborescence est remplacée par un swap atomique, et les dossiers git
   de premier niveau sont clonés/fast-forwardés depuis leur remote.
 - Les builtins (`site/scripts`, `site/deploy`) sont dans l'arborescence publiée :
   aucun second exemplaire sous `shared/`. Des liens symboliques `scripts` et
   `deploy` à la racine du dépôt gardent les commandes locales inchangées.
-- Serveur lancé en service utilisateur systemd (`site/deploy/files/beaut.service`),
+- Serveur lancé en service utilisateur systemd (`site/deploy/beaut.service`),
   secours `setsid` (fallback via `remote_install.sh`).
 - À l'issue : le serveur est joignable via le listener `socat` ou le relay C
   compilé (`site/scripts/http_server.c`), `curl /node | sh` fonctionne sans
@@ -155,6 +155,10 @@ correspondance. Le chemin est une phrase de dictionnaire + suffixe hexadécimal.
 - L'HTTP sert `/<secret>/…` depuis `$SVR_ROOT` ; un préfixe erroné ne donne jamais
   accès à l'arbre, et les segments commençant par un point (`.git`) restent
   privés.
+- `svr.sh init` crée `$PUBLISHED_ROOT/<secret>` -> `$SVR_ROOT` et
+  `$SVR_ROOT/scripts` -> `$PUBLISHED_ROOT/scripts`. Le handler autorise cette
+  cible publique, donc `/<secret>/scripts/` sert les mêmes scripts que
+  `/scripts/`, qui reste public.
 - `scripts/lib/journal.sh` est un portage de `~/.svr/usr/bin/journal` :
   `$SVR_ROOT/journal/YYYY/MM/DD/<sous-dossier>/<nom>.md`, en-tête
   (AAMMJJ, heure, utilisateur, hôte, séparateur, chemin), vue
@@ -196,12 +200,12 @@ automatiquement** : aucune liste d'export à maintenir.
 config.env                  variables d'environnement (éditables à la main)
 config.env.example          modèle + schéma de repli
 deploy.sh                   orchestrateur client SSH/SFTP (SERVICE_USER auto-détecté ; BOOTSTRAP_USER en secours ; --no-root = user)
-site/deploy/files/bootstrap.sh   première application en root : utilisateur, clé, config racine, sudo grant
-site/deploy/files/install_privileged.sh  rafraîchit la copie root des scripts + config gelée
-site/deploy/files/sync_site.sh   remplace site/ dans PUBLISHED_ROOT + clone/fast-forward git
-site/deploy/files/remote_install.sh   phase utilisateur : service systemd + demarrage du serveur
-site/deploy/files/beaut.service  service utilisateur systemd
-site/deploy/files/start.sh       script de démarrage (fichier à part, jamais inline)
+site/deploy/bootstrap.sh   première application en root : utilisateur, clé, config racine, sudo grant
+site/deploy/install_privileged.sh  rafraîchit la copie root des scripts + config gelée
+site/deploy/sync_site.sh   remplace site/ dans PUBLISHED_ROOT + clone/fast-forward git
+site/deploy/remote_install.sh   phase utilisateur : service systemd + demarrage du serveur
+site/deploy/beaut.service  service utilisateur systemd
+site/deploy/start.sh       script de démarrage (fichier à part, jamais inline)
 site/scripts/http_server.sh      chaine de listeners : socat → relay C → fail
 site/scripts/http_server.c       relay TCP minimal (socat-enough, gcc)
 site/scripts/http_handler.sh     handler serveur (routes + arborescences, pas d'exécution)
@@ -216,7 +220,7 @@ site/scripts/lib/devices.sh      registre, clés, adresses, trust, porte
 site/scripts/lib/invites.sh      invitations passMessage hachées (usages/TTL/révocation)
 site/scripts/svr.sh              CLI arborescence cachée, journal git et installeur
 site/scripts/journal_cli.sh      commande installée journal / journal-perso
-site/scripts/lib/personal_tree.sh  nom de dossier caché et modes de chemin secret
+site/scripts/lib/personal_tree.sh  dossier caché, chemins secrets et miroir dans l'arbre publié
 site/scripts/lib/journal.sh      journal compatible ~/.svr : arbre daté, vue hôte, git
 site/scripts/lib/passphrase.sh   mots, aléa, passphrases, secrets
 site/scripts/attribution.sh      CLI d'attribution virtuelle (secrets/chemins)

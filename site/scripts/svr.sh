@@ -130,6 +130,7 @@ case "$command" in
     path="$(personal_tree_initialize)" || exit 1
     journal_initialize || exit 1
     journal_perso_initialize || exit 1
+    personal_tree_link_site || exit 1
     printf 'personal tree: /%s\nroot: %s\njournal: %s\nperso: %s\n' \
       "$path" "$(personal_tree_root)" "$(journal_root)" "$(journal_perso_root)"
     ;;
