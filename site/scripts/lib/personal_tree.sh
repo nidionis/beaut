@@ -35,32 +35,58 @@ personal_tree_generate_random_path() {
 }
 
 # Print the bare (no leading slash) on-disk directory name. SVR_DIR wins when
-# explicitly set; otherwise a random hidden name is generated once and stored
-# in SVR_DIR_FILE with mode 600.
+# explicitly set; otherwise the name persisted in SVR_DIR_FILE is reused, and a
+# random hidden name is generated once when none exists. Changing SVR_DIR moves
+# the existing tree to the new directory instead of leaving it behind.
+personal_tree_write_directory_file() {
+  local directory_file="$1" name="$2"
+  mkdir -p -- "$(dirname "$directory_file")" || return 1
+  (umask 077; printf '%s\n' "$name" > "$directory_file") || return 1
+  chmod 600 "$directory_file"
+}
+
+personal_tree_move_directory() {
+  local from="${1:-}" to="${2:-}" old new
+  [[ -n "$from" && -n "$to" && "$from" != "$to" ]] || return 0
+  [[ -n "${SERVICE_ROOT:-}" ]] || return 0
+  old="$SERVICE_ROOT/$from"
+  new="$SERVICE_ROOT/$to"
+  [[ -d "$old" && ! -e "$new" ]] || return 0
+  mv -- "$old" "$new" || {
+    log warn "cannot move personal tree: $old -> $new"
+    return 1
+  }
+  log info "personal tree moved: $from -> $to"
+}
+
 personal_tree_directory_name() {
-  local directory_file existing
+  local directory_file existing desired
+  directory_file="$(personal_tree_directory_file)"
+  existing=''
+  if [[ -s "$directory_file" ]]; then
+    existing="$(tr -d '[:space:]' < "$directory_file")"
+    if ! personal_tree_validate_plain_path "$existing"; then
+      log warn "ignoring invalid SVR directory in $directory_file"
+      existing=''
+    fi
+  fi
   if [[ -n "${SVR_DIR:-}" ]]; then
     personal_tree_validate_plain_path "$SVR_DIR" || {
       printf 'invalid SVR_DIR: %s ([A-Za-z0-9._-], max 64)\n' "$SVR_DIR" >&2
       return 1
     }
-    printf '%s' "$SVR_DIR"
+    desired="$SVR_DIR"
+  elif [[ -n "$existing" ]]; then
+    printf '%s' "$existing"
     return 0
+  else
+    desired=".svr-$(personal_tree_generate_random_path)"
   fi
-  directory_file="$(personal_tree_directory_file)"
-  if [[ -s "$directory_file" ]]; then
-    existing="$(tr -d '[:space:]' < "$directory_file")"
-    if personal_tree_validate_plain_path "$existing"; then
-      printf '%s' "$existing"
-      return 0
-    fi
-    log warn "ignoring invalid SVR directory in $directory_file"
+  if [[ "$desired" != "$existing" ]]; then
+    personal_tree_move_directory "$existing" "$desired" || return 1
+    personal_tree_write_directory_file "$directory_file" "$desired" || return 1
   fi
-  existing=".svr-$(personal_tree_generate_random_path)"
-  mkdir -p -- "$(dirname "$directory_file")"
-  (umask 077; printf '%s\n' "$existing" > "$directory_file")
-  chmod 600 "$directory_file"
-  printf '%s' "$existing"
+  printf '%s' "$desired"
 }
 
 personal_tree_root() {
@@ -95,9 +121,18 @@ personal_tree_migrate() {
   fi
 }
 
-# Print the bare (no leading slash) URL prefix for the current mode.
+# Print the bare (no leading slash) URL prefix. An explicit SVR_PATH wins;
+# otherwise SVR_MODE decides (plain mode uses the historical SVR value).
 personal_tree_current_path() {
-  local mode="${SVR_MODE:-random}" path_file existing sha
+  local mode="${SVR_MODE:-random}" path_file existing sha explicit="${SVR_PATH:-}"
+  if [[ -n "$explicit" ]]; then
+    personal_tree_validate_plain_path "$explicit" || {
+      printf 'invalid SVR_PATH: %s ([A-Za-z0-9._-], max 64)\n' "$explicit" >&2
+      return 1
+    }
+    printf '%s' "$explicit"
+    return 0
+  fi
   case "$mode" in
     random)
       path_file="$(personal_tree_path_file)"

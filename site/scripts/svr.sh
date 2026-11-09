@@ -95,6 +95,7 @@ svr_install() {
 svr_remote() {
   local root="$1" url="${2:-}"
   if [[ -n "$url" ]]; then
+    url="$(journal_remote_resolve "$url" "$root")" || return 1
     journal_remote_set "$root" "$url" || return 1
     journal_git_push "$root"
     printf 'remote: %s\n' "$url"

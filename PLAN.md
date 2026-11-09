@@ -147,7 +147,9 @@ correspondance. Le chemin est une phrase de dictionnaire + suffixe hexadécimal.
 - `scripts/svr.sh` gère `$SVR_ROOT` (`journal/`, `perso/`, `notes/`,
   `DEFAULT.sh` statique). `SVR_DIR` fixe le nom du dossier ; vide, un nom caché
   `.svr-<8 aléatoires>` est généré une fois dans `state/svr_dir` (mode 600).
-- `SVR_MODE=random` (défaut) : 8 caractères `[a-z0-9]`, persistés dans
+  Changer `SVR_DIR` déplace l'arborescence existante.
+- `SVR_PATH` fixe explicitement le préfixe URL caché (aléatoire par défaut).
+  `SVR_MODE=random` : 8 caractères `[a-z0-9]`, persistés dans
   `state/svr_path` (mode 600). `sha` : 8 premiers caractères de
   `sha256("beaut-svr:" + SVR_SECRET)`. `plain` : valeur `SVR` explicite.
 - L'HTTP sert `/<secret>/…` depuis `$SVR_ROOT` ; un préfixe erroné ne donne jamais
@@ -163,7 +165,9 @@ correspondance. Le chemin est une phrase de dictionnaire + suffixe hexadécimal.
   pour désactiver). Le dossier journal est un dépôt git :
   pull avant édition, commit après, push si un remote existe (`JOURNAL_GIT=0`
   pour désactiver). `svr.sh remote <url>` (ou `JOURNAL_REMOTE`) remplace
-  `origin`, ce qui sert à repointers un serveur restauré.
+  `origin`, ce qui sert à repointers un serveur restauré. `JOURNAL_REMOTE=hidden`
+  pousse vers `user@host:<arborescence cachée>/journal` (`JOURNAL_REMOTE_ROOT`
+  fixe le chemin côté serveur).
 - `svr.sh init` migre l'ancien `$SERVICE_ROOT/svr` et son `diary/` vers le
   nouveau dossier et `journal/`.
 

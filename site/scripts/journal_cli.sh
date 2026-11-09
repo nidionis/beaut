@@ -63,7 +63,8 @@ journal_main() {
     remote)
       shift
       if [[ -n "${1:-}" ]]; then
-        journal_remote_set "$(journal_root)" "$1" && journal_git_push "$(journal_root)"
+        remote="$(journal_remote_resolve "$1" "$(journal_root)")" || return 1
+        journal_remote_set "$(journal_root)" "$remote" && journal_git_push "$(journal_root)"
       else
         journal_remote_get "$(journal_root)" || printf 'no remote\n' >&2
       fi

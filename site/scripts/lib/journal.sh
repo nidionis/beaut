@@ -196,6 +196,35 @@ journal_remote_set() {
   fi
 }
 
+# A remote may be a plain git URL or the sentinel "hidden", which points at the
+# journal folder inside the server's hidden tree. JOURNAL_REMOTE_ROOT pins the
+# server-side path when the command runs on another machine; otherwise the
+# local SERVICE_ROOT/hidden-name is used.
+journal_remote_resolve() {
+  local remote="${1:-}" root="${2:-$(journal_root)}" host user base
+  case "$remote" in
+    ''|none|0)
+      return 1
+      ;;
+    hidden|server)
+      host="${JOURNAL_REMOTE_HOST:-${SERVER_HOST:-}}"
+      user="${JOURNAL_REMOTE_USER:-${SERVICE_USER:-$(journal_user)}}"
+      [[ -n "$host" ]] || {
+        printf 'JOURNAL_REMOTE=hidden requires JOURNAL_REMOTE_HOST or SERVER_HOST\n' >&2
+        return 1
+      }
+      base="${JOURNAL_REMOTE_ROOT:-}"
+      if [[ -z "$base" ]]; then
+        base="${SERVICE_ROOT:-$HOME/.${SERVICE_USER:-beaut}}/$(basename "$(personal_tree_root)")"
+      fi
+      printf '%s@%s:%s/%s' "$user" "$host" "$base" "$(basename "$root")"
+      ;;
+    *)
+      printf '%s' "$remote"
+      ;;
+  esac
+}
+
 journal_remote_get() {
   local root="$1"
   [[ -d "$root/.git" ]] || return 1
@@ -359,7 +388,11 @@ journal_initialize_root() {
   chmod 700 "$root" 2>/dev/null || true
   if [[ "${JOURNAL_GIT:-1}" == "1" ]] && has_command git; then
     [[ -d "$root/.git" ]] || git -C "$root" init -q
+    # Accept pushes into this working tree (used when another machine pushes a
+    # journal to the hidden path served here).
+    git -C "$root" config receive.denyCurrentBranch updateInstead >/dev/null 2>&1 || true
     if [[ -n "$remote" ]]; then
+      remote="$(journal_remote_resolve "$remote" "$root")" || return 1
       journal_remote_set "$root" "$remote" || return 1
     fi
   fi

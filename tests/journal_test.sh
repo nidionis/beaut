@@ -100,6 +100,16 @@ if command -v git >/dev/null 2>&1; then
   journal_remote_set "$git_journal" "$new_origin" >/dev/null
   assert_equal "$new_origin" \
     "$(git -C "$git_journal" remote get-url origin)" "remote can be replaced"
+
+  # "hidden" points at the server's hidden journal path.
+  resolved="$(JOURNAL_REMOTE_HOST='srv.example' JOURNAL_REMOTE_USER='beaut' \
+    JOURNAL_REMOTE_ROOT="$sandbox/service/sheethome" \
+    journal_remote_resolve hidden "$git_journal")"
+  assert_equal "beaut@srv.example:$sandbox/service/sheethome/git-journal" \
+    "$resolved" "hidden remote resolves to the server path"
+  assert_equal 'git@example:repo.git' \
+    "$(journal_remote_resolve 'git@example:repo.git' "$git_journal")" \
+    "plain remote passes through"
 else
   printf 'git not found: journal git tests skipped\n'
 fi

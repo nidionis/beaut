@@ -43,6 +43,25 @@ assert_file_exists "$(personal_tree_root)/notes" "notes directory"
 journal_initialize
 assert_file_exists "$(personal_tree_root)/journal" "journal directory"
 
+# --- changing SVR_DIR moves the existing tree -------------------------------
+export SVR_DIR='movedhome'
+assert_equal "$SERVICE_ROOT/movedhome" "$(personal_tree_root)" "new SVR_DIR is used"
+assert_file_exists "$SERVICE_ROOT/movedhome/journal" "tree moved with SVR_DIR"
+assert_file_missing "$SERVICE_ROOT/$random_dir" "old directory is gone"
+assert_equal 'movedhome' "$(tr -d '[:space:]' < "$SVR_DIR_FILE")" \
+  "SVR_DIR_FILE records the move"
+unset SVR_DIR
+assert_equal "$SERVICE_ROOT/movedhome" "$(personal_tree_root)" \
+  "previous directory persists when SVR_DIR is empty"
+
+# --- explicit hidden URL path -----------------------------------------------
+export SVR_PATH='pinned01'
+assert_equal 'pinned01' "$(personal_tree_current_path)" "SVR_PATH wins"
+assert_equal '/pinned01' "$(personal_tree_url_path)" "SVR_PATH URL prefix"
+SVR_PATH='bad/path'
+assert_failure "SVR_PATH rejects slashes" personal_tree_current_path
+unset SVR_PATH
+
 # --- URL prefix modes -------------------------------------------------------
 export SVR_MODE='sha'
 export SVR_SECRET='a long shared secret'

@@ -54,8 +54,8 @@ exported automatically — no export list to maintain.
 - `WG_PORT` / `WG_NETWORK` / `WG_SERVER_IP`: WireGuard
 - `DEVICE_DIRECTORY` / `DEVICE_REGISTRY`, `DEVICE_IDENTITY_DIRECTORY`: device identity
 - `INVITE_DIRECTORY` / `INVITE_REGISTRY`, `INVITE_DEFAULT_USES`, `INVITE_TTL_SECONDS`: invites
-- `SVR_MODE`, `SVR`, `SVR_SECRET`, `SVR_DIR`, `SVR_ROOT`, `SVR_PATH_FILE`, `SVR_DIR_FILE`: hidden personal tree
-- `JOURNAL_DIR`, `JOURNAL_ROOT`, `PERSO_DIR`, `PERSO_ROOT`, `JOURNAL_REMOTE`, `PERSO_REMOTE`, `JOURNAL_GIT`, `JOURNAL_EDITOR`, `SVR_BIN_DIR`, `SVR_INSTALL_PATH`: journal and install
+- `SVR_MODE`, `SVR`, `SVR_PATH`, `SVR_SECRET`, `SVR_DIR`, `SVR_ROOT`, `SVR_PATH_FILE`, `SVR_DIR_FILE`: hidden personal tree
+- `JOURNAL_DIR`, `JOURNAL_ROOT`, `PERSO_DIR`, `PERSO_ROOT`, `JOURNAL_REMOTE`, `PERSO_REMOTE`, `JOURNAL_REMOTE_HOST`, `JOURNAL_REMOTE_USER`, `JOURNAL_REMOTE_ROOT`, `JOURNAL_GIT`, `JOURNAL_EDITOR`, `SVR_BIN_DIR`, `SVR_INSTALL_PATH`: journal and install
 - `TOKEN_TTL_SECONDS`: token lifetime
 - `NOT_FOUND_BODY`, `ARCHIVE_MEMORY_DIVISOR`, `LOG_LEVEL`
 
@@ -219,11 +219,13 @@ journal-perso [name]
 
 `SVR_DIR` chooses the on-disk directory name. When it is empty, a hidden
 `.svr-<8 random>` name is generated once and persisted in `state/svr_dir`
-(mode 600). The URL prefix is independent: `SVR_MODE=random` uses eight
-lowercase alphanumeric characters persisted in `state/svr_path`; `sha` derives
-them from `sha256("beaut-svr:" + SVR_SECRET)`; `plain` uses an explicit `SVR`
-value. `svr.sh init` also migrates the historical `$SERVICE_ROOT/svr` tree and
-its `diary/` directory to the new layout.
+(mode 600); changing `SVR_DIR` moves the existing tree to the new directory.
+The URL prefix is independent: `SVR_PATH` pins it explicitly (random by
+default); `SVR_MODE=random` uses eight lowercase alphanumeric characters
+persisted in `state/svr_path`; `sha` derives them from
+`sha256("beaut-svr:" + SVR_SECRET)`; `plain` uses an explicit `SVR` value.
+`svr.sh init` also migrates the historical `$SERVICE_ROOT/svr` tree and its
+`diary/` directory to the new layout.
 
 The journal is a port of `~/.svr/usr/bin/journal`:
 
@@ -238,9 +240,11 @@ separator, relative path). `journal` pulls before editing, opens
 `JOURNAL_EDITOR` (default `$EDITOR`), then commits and pushes when the folder is
 a git repository. A missing root is initialized (and git-initialized) on first
 use. `JOURNAL_GIT=0` disables git. `JOURNAL_REMOTE` (or
-`svr.sh remote <url>`) sets `origin`; re-run it after a restore to point a
-recovered server at the new address. `journal-perso` behaves the same in
-`$SVR_ROOT/perso` with the `fouretout` default subfolder.
+`svr.sh remote <url>`) sets `origin`; `JOURNAL_REMOTE=hidden` uses
+`user@host:<server hidden tree>/<journal>`, with `JOURNAL_REMOTE_ROOT` pinning
+the server path when the command runs elsewhere. Re-run `remote` after a
+restore to point a recovered server at the new address. `journal-perso`
+behaves the same in `$SVR_ROOT/perso` with the `fouretout` default subfolder.
 
 Nothing in the tree is public: requests outside the secret prefix never reach
 it, and dot-prefixed segments such as `.git` are never served. The generated
