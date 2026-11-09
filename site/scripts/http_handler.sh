@@ -3,9 +3,9 @@
 # The server never executes work: it serves files/scripts and validates tokens.
 #
 # Dynamic routes (priority):
-#   GET  /work          -> create a token, return it
-#   GET  /work/<token>  -> return the command bound to the token
-#   POST /done/<token>  -> store the result bound to the token
+#   GET  /work          -> return an id and the command (from $SVR_ROOT/command)
+#   GET  /work/<id>     -> return the command
+#   POST /done/<id>     -> archive the posted result
 #   POST /get           -> dataset request (body: key=value&key=value)
 #   GET  /signin        -> enrollment instructions
 #   POST /signin        -> accept a device public key (invite auto-accepts)
@@ -211,56 +211,44 @@ serve_door() {
 # --- routing ----------------------------------------------------------------
 http_parse_request
 [[ -n "${http_method:-}" ]] || exit 0
+# Command served to workers: $SVR_ROOT/command, else a safe default.
+work_command() {
+  local cmd_file
+  if declare -F personal_tree_root >/dev/null 2>&1; then
+    cmd_file="$(personal_tree_root 2>/dev/null)/command"
+    [[ -f "$cmd_file" ]] && { cat -- "$cmd_file"; return; }
+  fi
+  printf 'echo hello-world\n'
+}
+
 case "$url_path" in
   work)
-    token="$(token_create 'echo hello-world' 'pending' "$(date +%s)")"
+    token="$(date +%s%N 2>/dev/null || echo "$$.$(date +%s)").$RANDOM"
     http_send_response 200 "$token"
     ;;
   work/*)
     token="${url_path#work/}"
-    token_row="$(token_find "$token")"
-    if [[ -z "$token_row" ]]; then
-      not_found
+    if [[ -z "$token" ]]; then
+      http_send_response 400 "missing id"
     else
-      task_command="$(state_field "$token_row" 3)"
-      token_status="$(state_field "$token_row" 4)"
-      token_created_at="$(state_field "$token_row" 5)"
-      if [[ "$token_status" == "pending" || "$token_status" == "" ]]; then
-        now_seconds="$(date +%s)"
-        if (( now_seconds - token_created_at > TOKEN_TTL_SECONDS )); then
-          state_update "$STATE_DIR/db.tsv" 4 "expired" 2 "$token"
-          http_send_response 410 "token expired or already used ($token_status)"
-        else
-          http_send_response 200 "$task_command"
-        fi
-      else
-        http_send_response 410 "token expired or already used ($token_status)"
-      fi
+      http_send_response 200 "$(work_command)"
     fi
     ;;
   done/*)
     token="${url_path#done/}"
     if [[ -z "$token" ]]; then
-      http_send_response 400 "missing token"
-    elif [[ -z "$(token_find "$token")" ]]; then
-      not_found
+      http_send_response 400 "missing id"
     else
       archive_result "$token" "$request_body"
-      state_update "$STATE_DIR/db.tsv" 4 "done" 2 "$token"
       http_send_response 200 "confirmed: $token"
     fi
     ;;
   get)
-    request_token="$(http_get_form_param token)"
     dataset="$(http_get_form_param dataset)"
-    if [[ -z "$request_token" ]]; then
-      http_send_response 400 "missing token"
-    elif [[ -z "$dataset" ]]; then
+    if [[ -z "$dataset" ]]; then
       http_send_response 400 "missing dataset"
-    elif [[ -z "$(token_find "$request_token")" ]]; then
-      http_send_response 403 "unknown token"
     else
-      http_send_response 200 "dataset $dataset granted to token $request_token"
+      http_send_response 200 "dataset $dataset granted"
     fi
     ;;
   signin)

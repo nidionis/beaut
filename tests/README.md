@@ -29,7 +29,7 @@ because some systems mount `/tmp` `noexec`.
 |------|----------|
 | `lib/assert.sh` | assertions (`equal`, `contains`, `matches`, `status`, ...) |
 | `lib/server.sh` | compile and run the C relay on loopback, isolated roots |
-| `handler_test.sh` | token lifecycle, `/done`, `/get`, static tree, index.html, MIME, hidden paths, 404, traversal, TTL |
+| `handler_test.sh` | work/done/get, static tree, index.html, MIME, hidden paths, 404, traversal |
 | `served_node_test.sh` | `curl /node \| sh` from an empty directory, `/join` unpublished |
 | `site_test.sh` | complete `site/` replacement, reserved names, git clone/pull |
 | `svr_test.sh` | hidden directory and URL path modes, journal under the secret prefix, migration, CLI install |

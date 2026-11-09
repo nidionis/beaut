@@ -221,6 +221,11 @@ personal_tree_initialize() {
     personal_tree_default_script > "$root/DEFAULT.sh"
     chmod 755 "$root/DEFAULT.sh"
   fi
+  if [[ ! -f "$root/command" ]]; then
+    printf 'echo hello-world
+' > "$root/command"
+    chmod 600 "$root/command" 2>/dev/null || true
+  fi
   personal_tree_link_site
   printf '%s' "$name"
 }

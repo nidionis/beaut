@@ -30,6 +30,7 @@ usage: journal [subfolder] <name>
        journal list [count]
        journal show [date] [subfolder] [name]
        journal sync
+       journal push
        journal remote [url]
 EOF
 }

@@ -19,6 +19,7 @@ usage: svr.sh <command>
   journal ...             add/list/show/sync/remote, or [subfolder] <name>
   journal-perso ...       personal journal, or [subfolder] <name>
   sync                    pull and push the svr repo
+  push                    push journal and perso remotes
   remote [url]            show or set the git remote
 EOF
   exit 2
@@ -105,6 +106,8 @@ case "$command" in
     path="$(personal_tree_initialize)" || exit 1
     journal_initialize || exit 1
     journal_perso_initialize || exit 1
+    journal_ensure_pushable "$(journal_root)" || true
+    journal_ensure_pushable "$(journal_perso_root)" || true
     personal_tree_link_site || exit 1
     if [[ "${JOURNAL_GIT:-1}" == "1" ]] && has_command git; then
       journal_git_run "$(personal_tree_root)" add -A >/dev/null 2>&1 || true

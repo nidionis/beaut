@@ -68,19 +68,3 @@ state_file_init() {
   chmod 700 "$directory" 2>/dev/null || true
   chmod 600 "$file" 2>/dev/null || true
 }
-
-token_create() {
-  local command="$1" status="$2" created_at="$3"
-  local token
-  token="$(new_id | tr -d '.')"
-  state_append "$STATE_DIR/db.tsv" token "$token" "$command" "$status" "$created_at" "" "" ""
-  printf '%s' "$token"
-}
-
-token_find() {
-  state_find_two "$STATE_DIR/db.tsv" 1 token 2 "$1"
-}
-
-token_field() {
-  state_field "$(token_find "$1")" "$2"
-}

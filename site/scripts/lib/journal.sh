@@ -231,7 +231,15 @@ journal_remote_resolve() {
       if [[ -z "$base" ]]; then
         base="$(personal_tree_root 2>/dev/null || echo "${SERVICE_ROOT:-$HOME/.${SERVICE_USER:-beaut}}/.svr")"
       fi
-      printf '%s@%s:%s/%s' "$user" "$host" "$base" "$(basename "$root")"
+      local port="${JOURNAL_SSH_PORT:-${SSH_PORT:-}}"
+      local repo_path="$base/$(basename "$root")"
+      # Prefer .git bare/normal repo path when it exists conceptually.
+      [[ -d "$repo_path.git" || "${JOURNAL_REMOTE_STYLE:-}" == "bare" ]] && repo_path="$repo_path.git"
+      if [[ -n "$port" && "$port" != "22" ]]; then
+        printf 'ssh://%s@%s:%s/%s' "$user" "$host" "$port" "${repo_path#/}"
+      else
+        printf '%s@%s:%s' "$user" "$host" "$repo_path"
+      fi
       ;;
     *)
       printf '%s' "$remote"
@@ -423,4 +431,22 @@ journal_initialize() {
 
 journal_perso_initialize() {
   journal_initialize_root "$(journal_perso_root)" "${PERSO_REMOTE:-}"
+}
+
+
+# Configure a journal repo to accept pushes (server side). Uses updateInstead
+# for checked-out repos; bare repos work naturally.
+journal_ensure_pushable() {
+  local root="$1"
+  [[ "${JOURNAL_GIT:-1}" == "1" ]] || return 0
+  has_command git || return 0
+  journal_git_repo "$root" || return 0
+  git -C "$root" config receive.denyCurrentBranch updateInstead >/dev/null 2>&1 || true
+  git -C "$root" config receive.denyNonFastForwards false >/dev/null 2>&1 || true
+}
+
+journal_push() {
+  local root="${1:-$(journal_root)}"
+  journal_ensure_pushable "$root"
+  journal_git_push "$root"
 }

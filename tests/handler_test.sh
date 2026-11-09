@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# handler_test.sh — token lifecycle, static tree, 404, traversal, TTL.
+# handler_test.sh — work/done/get, static tree, 404, traversal.
 set -euo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,41 +26,36 @@ printf 'id\tvalue\n1\tone\n' > "$published_root/data/table.tsv"
 printf 'alpha\n' > "$published_root/tree/alpha.txt"
 printf 'private\n' > "$published_root/tree/.secret"
 
-export TOKEN_TTL_SECONDS=300
+# Command can come from SVR_ROOT/command
+svr_root="$sandbox/svr"
+mkdir -p "$svr_root"
+printf 'echo from-svr-command\n' > "$svr_root/command"
+export SVR_ROOT="$svr_root"
 export SERVER_HOST='fixture.example'
 export HTTP_PORT='9090'
 server_start "$published_root" "$state_directory"
 
-# --- token lifecycle --------------------------------------------------------
+# --- work / done (fictif id) -----------------------------------------------
 http_get /work
-assert_status 200 "$HTTP_STATUS" "GET /work should create a token"
+assert_status 200 "$HTTP_STATUS" "GET /work returns an id"
 token="$HTTP_BODY"
-assert_matches '^[0-9]+$' "$token" "token should be numeric"
+assert_not_equal '' "$token" "id is not empty"
 
 http_get "/work/$token"
-assert_status 200 "$HTTP_STATUS" "GET /work/<token> should return the command"
-assert_equal 'echo hello-world' "$HTTP_BODY" "bound command"
+assert_status 200 "$HTTP_STATUS" "GET /work/<id> returns the command"
+assert_equal 'echo from-svr-command' "$HTTP_BODY" "command from SVR_ROOT/command"
 
 http_post "/done/$token" 'output=hello-world'
-assert_status 200 "$HTTP_STATUS" "POST /done/<token> should confirm"
+assert_status 200 "$HTTP_STATUS" "POST /done/<id> confirms"
 assert_contains "$HTTP_BODY" "confirmed: $token" "confirmation body"
 
-http_get "/work/$token"
-assert_status 410 "$HTTP_STATUS" "a done token should be gone"
-
-# --- dataset request --------------------------------------------------------
-http_post /get "token=$token&dataset=sample"
-assert_status 200 "$HTTP_STATUS" "known token should get the dataset"
+# --- /get -------------------------------------------------------------------
+http_post /get "dataset=sample"
+assert_status 200 "$HTTP_STATUS" "dataset request granted"
 assert_contains "$HTTP_BODY" 'dataset sample granted' "dataset body"
 
-http_post /get "dataset=sample"
-assert_status 400 "$HTTP_STATUS" "missing token should be rejected"
-
-http_post /get "token=$token"
+http_post /get ""
 assert_status 400 "$HTTP_STATUS" "missing dataset should be rejected"
-
-http_post /get 'token=does-not-exist&dataset=sample'
-assert_status 403 "$HTTP_STATUS" "unknown token should be forbidden"
 
 # --- static tree ------------------------------------------------------------
 http_get /
@@ -131,15 +126,3 @@ assert_status 404 "$HTTP_STATUS" "path traversal should be 404"
 
 http_get_path_as_is '/data/../../etc/passwd'
 assert_status 404 "$HTTP_STATUS" "nested traversal should be 404"
-
-# --- token TTL --------------------------------------------------------------
-server_stop
-export TOKEN_TTL_SECONDS=1
-server_start "$published_root" "$state_directory"
-
-http_get /work
-assert_status 200 "$HTTP_STATUS" "TTL server should create a token"
-expiring_token="$HTTP_BODY"
-sleep 2
-http_get "/work/$expiring_token"
-assert_status 410 "$HTTP_STATUS" "expired token should be gone"

@@ -56,7 +56,7 @@ exported automatically — no export list to maintain.
 - `INVITE_DIRECTORY` / `INVITE_REGISTRY`, `INVITE_DEFAULT_USES`, `INVITE_TTL_SECONDS`: invites
 - `SVR_NAME`, `SVR_ROOT`, `SVR_NAME_FILE`: personal tree (name, data dir, persisted name)
 - `SVR_DIR`, `SVR_PATH`: legacy/backcompat aliases
-- `JOURNAL_DIR`, `JOURNAL_ROOT`, `PERSO_DIR`, `PERSO_ROOT`, `JOURNAL_REMOTE`, `PERSO_REMOTE`, `JOURNAL_REMOTE_HOST`, `JOURNAL_REMOTE_USER`, `JOURNAL_REMOTE_ROOT`, `JOURNAL_GIT`, `JOURNAL_EDITOR`, `SVR_BIN_DIR`, `SVR_INSTALL_PATH`: journal and install
+- `JOURNAL_DIR`, `JOURNAL_ROOT`, `PERSO_DIR`, `PERSO_ROOT`, `JOURNAL_REMOTE`, `PERSO_REMOTE`, `JOURNAL_REMOTE_HOST`, `JOURNAL_REMOTE_USER`, `JOURNAL_REMOTE_ROOT`, `JOURNAL_SSH_PORT`, `JOURNAL_GIT`, `JOURNAL_EDITOR`, `SVR_BIN_DIR`, `SVR_INSTALL_PATH`: journal and install
 - `TOKEN_TTL_SECONDS`: token lifetime
 - `NOT_FOUND_BODY`, `ARCHIVE_MEMORY_DIVISOR`, `LOG_LEVEL`
 
@@ -329,7 +329,7 @@ peer idempotence and the server-rendered node artifact. See `tests/README.md`.
 - `site/scripts/lib/devices.sh` — device registry, keys, addresses, trust, door
 - `site/scripts/lib/invites.sh` — hashed passMessage invites (uses/TTL/revocation)
 - `site/scripts/svr.sh` — hidden tree, git journal and command installer
-- `site/scripts/journal_cli.sh` — installed `journal` / `journal-perso` command
+- `site/scripts/journal_cli.sh / scripts/journal_push.sh` — installed `journal` / `journal-perso` command
 - `site/scripts/lib/personal_tree.sh` — hidden directory and secret URL path modes
 - `site/scripts/lib/journal.sh` — reference-compatible date tree, host view, git
 - `site/scripts/lib/passphrase.sh` — words, random material, passphrases, secrets
