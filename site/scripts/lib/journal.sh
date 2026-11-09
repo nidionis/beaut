@@ -9,6 +9,8 @@
 #
 # The folder is a git repository when JOURNAL_GIT=1 and git is available:
 # pull before an edit, commit after it, push when a remote exists.
+# When the journal lives inside a worktree (.git file / shared repo), git
+# operations use that enclosing repository.
 set -uo pipefail
 
 JOURNAL_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -152,10 +154,17 @@ journal_link_host() {
 }
 
 # --- git ------------------------------------------------------------------
+# True when this root is (or is inside) a git repository/worktree.
+journal_git_repo() {
+  local root="$1"
+  [[ -e "$root/.git" ]] && return 0
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1
+}
+
 journal_git_ready() {
   [[ "${JOURNAL_GIT:-1}" == "1" ]] || return 1
   has_command git || return 1
-  [[ -d "$1/.git" ]]
+  journal_git_repo "$1"
 }
 
 journal_git_run() {
@@ -174,7 +183,9 @@ journal_git_pull() {
 journal_git_commit() {
   local root="$1" message="$2"
   journal_git_ready "$root" || return 0
-  journal_git_run "$root" add -A >/dev/null 2>&1 || true
+  # Scope add to this root when it's a subdir of a larger repo.
+  journal_git_run "$root" add -A -- "$root" >/dev/null 2>&1 \
+    || journal_git_run "$root" add -A >/dev/null 2>&1 || true
   journal_git_run "$root" commit -m "$message" >/dev/null 2>&1 || true
 }
 
@@ -188,7 +199,10 @@ journal_remote_set() {
   local root="$1" url="$2"
   [[ -n "$url" ]] || { printf 'missing git remote URL\n' >&2; return 1; }
   has_command git || { printf 'git is required for remotes\n' >&2; return 1; }
-  [[ -d "$root/.git" ]] || git -C "$root" init -q
+  [[ -d "$root" ]] || mkdir -p -- "$root"
+  if ! journal_git_repo "$root"; then
+    git -C "$root" init -q
+  fi
   if git -C "$root" remote get-url origin >/dev/null 2>&1; then
     git -C "$root" remote set-url origin "$url"
   else
@@ -215,7 +229,12 @@ journal_remote_resolve() {
       }
       base="${JOURNAL_REMOTE_ROOT:-}"
       if [[ -z "$base" ]]; then
-        base="${SERVICE_ROOT:-$HOME/.${SERVICE_USER:-beaut}}/$(basename "$(personal_tree_root)")"
+        # Use the worktree/tree path on the server.
+        if [[ -n "${PUBLISHED_ROOT:-}" ]]; then
+          base="$PUBLISHED_ROOT/$(personal_tree_name 2>/dev/null || basename "$(personal_tree_root)")"
+        else
+          base="${SERVICE_ROOT:-$HOME/.${SERVICE_USER:-beaut}}/site/$(personal_tree_name 2>/dev/null || basename "$(personal_tree_root)")"
+        fi
       fi
       printf '%s@%s:%s/%s' "$user" "$host" "$base" "$(basename "$root")"
       ;;
@@ -227,7 +246,7 @@ journal_remote_resolve() {
 
 journal_remote_get() {
   local root="$1"
-  [[ -d "$root/.git" ]] || return 1
+  [[ -d "$root/.git" || -f "$root/.git" ]] || git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || return 1
   git -C "$root" remote get-url origin 2>/dev/null
 }
 
@@ -387,7 +406,9 @@ journal_initialize_root() {
   mkdir -p -- "$root"
   chmod 700 "$root" 2>/dev/null || true
   if [[ "${JOURNAL_GIT:-1}" == "1" ]] && has_command git; then
-    [[ -d "$root/.git" ]] || git -C "$root" init -q
+    if ! journal_git_repo "$root"; then
+      git -C "$root" init -q
+    fi
     # Accept pushes into this working tree (used when another machine pushes a
     # journal to the hidden path served here).
     git -C "$root" config receive.denyCurrentBranch updateInstead >/dev/null 2>&1 || true

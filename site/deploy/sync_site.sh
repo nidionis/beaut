@@ -91,6 +91,36 @@ if [[ -s "$repository_list" ]]; then
   done < "$repository_list"
 fi
 
+# Preserve hidden worktrees (svr tree: directory with .git file) across the swap.
+# They are managed by svr.sh, not by the site payload.
+_svr_keep="${SVR_NAME:-}"
+[[ -z "$_svr_keep" && -s "${STATE_DIR:-$HOME/.beaut/state}/svr_name" ]] && _svr_keep="$(tr -d '[:space:]' < "${STATE_DIR:-$HOME/.beaut/state}/svr_name")"
+[[ -z "$_svr_keep" && -s "${STATE_DIR:-$HOME/.beaut/state}/svr_path" ]] && _svr_keep="$(tr -d '[:space:]' < "${STATE_DIR:-$HOME/.beaut/state}/svr_path")"
+if [[ -d "$PUBLISHED_ROOT" ]]; then
+  while IFS= read -r -d '' preserved; do
+    pname="$(basename -- "$preserved")"
+    [[ -e "$new_root/$pname" ]] && continue
+    # Worktrees have .git as a file; also preserve if SVR_NAME/path matches.
+    if [[ -f "$preserved/.git" ]] || [[ -n "$_svr_keep" && "$pname" == "$_svr_keep" ]]; then
+      mv -- "$preserved" "$new_root/$pname"
+      # Repair worktree back-pointer after the path change.
+      if [[ -f "$new_root/$pname/.git" ]] && command -v git >/dev/null 2>&1; then
+        gitdir="$(sed -n 's/^gitdir: //p' "$new_root/$pname/.git" 2>/dev/null || true)"
+        if [[ -n "$gitdir" && -f "$gitdir/gitdir" ]]; then
+          printf '%s/.git
+' "$new_root/$pname" > "$gitdir/gitdir" 2>/dev/null || true
+        fi
+        if [[ -n "${SVR_REPO:-}" && -d "${SVR_REPO}/.git" ]]; then
+          git -C "$SVR_REPO" worktree repair "$new_root/$pname" >/dev/null 2>&1 || true
+        elif [[ -n "$gitdir" ]]; then
+          repo_dir="$(dirname "$(dirname "$(dirname "$gitdir")")")"
+          git -C "$repo_dir" worktree repair "$new_root/$pname" >/dev/null 2>&1 || true
+        fi
+      fi
+    fi
+  done < <(find "$PUBLISHED_ROOT" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+fi
+
 # Atomic swap: the live tree is either the old one or the complete new one.
 if [[ -e "$PUBLISHED_ROOT" ]]; then
   mv -- "$PUBLISHED_ROOT" "$backup_root"

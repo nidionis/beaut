@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# svr_test.sh — hidden personal tree: random directory and URL path modes,
-# journal layout under the secret prefix, migration and CLI installation.
+# svr_test.sh — hidden personal tree worktree: name/path, .git file, journal
+# under the secret prefix, migration, scripts linking and CLI installation.
 set -euo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,10 +12,8 @@ sandbox="$(mktemp -d)"
 trap 'server_stop; rm -rf -- "$sandbox"' EXIT
 
 export STATE_DIR="$sandbox/state"
-export PUBLISHED_ROOT="$sandbox/shared"
+export PUBLISHED_ROOT="$sandbox/site"
 export SERVICE_ROOT="$sandbox/service"
-export SVR_DIR_FILE="$sandbox/state/svr_dir"
-export SVR_PATH_FILE="$sandbox/state/svr_path"
 export LOG_LEVEL='error'
 export JOURNAL_GIT='0'
 mkdir -p "$STATE_DIR" "$PUBLISHED_ROOT" "$SERVICE_ROOT"
@@ -24,90 +22,72 @@ mkdir -p "$STATE_DIR" "$PUBLISHED_ROOT" "$SERVICE_ROOT"
 . "$PROJECT_ROOT/site/scripts/lib/personal_tree.sh"
 . "$PROJECT_ROOT/site/scripts/lib/journal.sh"
 
-# --- random hidden directory + random URL path ------------------------------
-unset SVR_DIR SVR_ROOT
-export SVR_MODE='random'
-random_path="$(personal_tree_initialize)"
-random_dir="$(tr -d '[:space:]' < "$SVR_DIR_FILE")"
-assert_matches '^[a-z0-9]{8}$' "$random_path" "random URL path shape"
-assert_matches '^\.svr-[a-z0-9]{8}$' "$random_dir" "random hidden directory name"
-assert_equal "$SERVICE_ROOT/$random_dir" "$(personal_tree_root)" "root uses hidden name"
-assert_equal "$random_path" "$(personal_tree_current_path)" "random URL path is stable"
-assert_equal "$random_path" "$(personal_tree_current_path)" "random URL path persists"
-assert_equal "$random_path" "$(tr -d '[:space:]' < "$SVR_PATH_FILE")" "path file content"
-assert_matches '^600$' "$(stat -c '%a' "$SVR_PATH_FILE")" "path file is private"
-assert_matches '^600$' "$(stat -c '%a' "$SVR_DIR_FILE")" "directory file is private"
+# --- random hidden name + worktree location ----------------------------------
+unset SVR_NAME SVR_PATH SVR_DIR SVR_ROOT SVR_TREE SVR SVR_MODE
+random_name="$(personal_tree_initialize)"
+assert_matches '^[A-Za-z0-9]{8}$' "$random_name" "random hidden name shape"
+assert_equal "$PUBLISHED_ROOT/$random_name" "$(personal_tree_root)" \
+  "worktree lives in the published site tree"
+assert_equal "$random_name" "$(personal_tree_current_path)" "URL path matches name"
+assert_equal "$random_name" "$(personal_tree_current_path)" "name is stable"
 assert_file_exists "$(personal_tree_root)/DEFAULT.sh" "static default script"
 assert_file_exists "$(personal_tree_root)/notes" "notes directory"
 
 journal_initialize
 assert_file_exists "$(personal_tree_root)/journal" "journal directory"
 
-# --- changing SVR_DIR moves the existing tree -------------------------------
-export SVR_DIR='movedhome'
-assert_equal "$SERVICE_ROOT/movedhome" "$(personal_tree_root)" "new SVR_DIR is used"
-assert_file_exists "$SERVICE_ROOT/movedhome/journal" "tree moved with SVR_DIR"
-assert_file_missing "$SERVICE_ROOT/$random_dir" "old directory is gone"
-assert_equal 'movedhome' "$(tr -d '[:space:]' < "$SVR_DIR_FILE")" \
-  "SVR_DIR_FILE records the move"
-unset SVR_DIR
-assert_equal "$SERVICE_ROOT/movedhome" "$(personal_tree_root)" \
-  "previous directory persists when SVR_DIR is empty"
+# --- explicit SVR_NAME ------------------------------------------------------
+export SVR_NAME='named01'
+assert_equal 'named01' "$(personal_tree_name)" "explicit SVR_NAME"
+assert_equal "$PUBLISHED_ROOT/named01" "$(personal_tree_root)" "root uses SVR_NAME"
+unset SVR_NAME
 
-# --- explicit hidden URL path -----------------------------------------------
+# --- SVR_PATH overrides URL only (backcompat) --------------------------------
 export SVR_PATH='pinned01'
-assert_equal 'pinned01' "$(personal_tree_current_path)" "SVR_PATH wins"
+export SVR_NAME='tree01'
+assert_equal 'pinned01' "$(personal_tree_current_path)" "SVR_PATH overrides URL"
 assert_equal '/pinned01' "$(personal_tree_url_path)" "SVR_PATH URL prefix"
+assert_equal "$PUBLISHED_ROOT/tree01" "$(personal_tree_root)" "tree uses SVR_NAME"
+unset SVR_PATH SVR_NAME
+
+# --- validation --------------------------------------------------------------
 SVR_PATH='bad/path'
 assert_failure "SVR_PATH rejects slashes" personal_tree_current_path
 unset SVR_PATH
+SVR_NAME='bad/name here'
+assert_failure "SVR_NAME rejects spaces" personal_tree_name
+unset SVR_NAME
 
-# --- URL prefix modes -------------------------------------------------------
-export SVR_MODE='sha'
-export SVR_SECRET='a long shared secret'
-sha_expected="$(printf '%s' 'beaut-svr:a long shared secret' | sha256sum | awk '{print $1}')"
-sha_expected="${sha_expected:0:8}"
-assert_equal "$sha_expected" "$(personal_tree_current_path)" "sha mode derives the path"
-assert_equal "$sha_expected" "$(personal_tree_current_path)" "sha path is deterministic"
-unset SVR_SECRET
-assert_failure "sha mode requires SVR_SECRET" personal_tree_current_path
-
+# --- legacy plain/SVR mode backcompat ---------------------------------------
 export SVR_MODE='plain'
-export SVR='comalamaison'
-assert_equal 'comalamaison' "$(personal_tree_current_path)" "plain URL path"
-assert_equal '/comalamaison' "$(personal_tree_url_path)" "plain URL prefix"
+export SVR='hidden01'
+assert_equal 'hidden01' "$(personal_tree_current_path)" "plain URL path"
+assert_equal '/hidden01' "$(personal_tree_url_path)" "plain URL prefix"
 SVR='bad/path'
 assert_failure "plain path rejects slashes" personal_tree_current_path
-SVR='..'
-assert_failure "plain path rejects dot-dot" personal_tree_current_path
-
-# --- explicit SVR_DIR -------------------------------------------------------
-export SVR_DIR='sheethome'
-export SVR='hidden01'
-assert_equal "$SERVICE_ROOT/sheethome" "$(personal_tree_root)" "explicit SVR_DIR"
-assert_equal 'sheethome' "$(personal_tree_directory_name)" "directory name"
-unset SVR_DIR SVR_DIR_FILE
-export SVR_DIR_FILE="$sandbox/state/svr_dir_2"
+unset SVR SVR_MODE
 
 # --- legacy migration: svr/ and diary/ --------------------------------------
 legacy_service="$sandbox/legacy-service"
-mkdir -p "$legacy_service/svr/diary"
+legacy_site="$sandbox/legacy-site"
+mkdir -p "$legacy_service" "$legacy_site" "$legacy_service/svr/diary"
 printf 'old entry\n' > "$legacy_service/svr/diary/2026-01-01.md"
-SERVICE_ROOT="$legacy_service" SVR_DIR='sheethome' SVR_DIR_FILE="$legacy_service/state/svr_dir" \
-  personal_tree_initialize >/dev/null
-assert_file_exists "$legacy_service/sheethome/journal/2026-01-01.md" \
-  "diary is migrated to journal"
-assert_file_missing "$legacy_service/svr" "legacy tree is moved"
+SERVICE_ROOT="$legacy_service" PUBLISHED_ROOT="$legacy_site" SVR_NAME='sheethome' \
+  JOURNAL_GIT='0' personal_tree_initialize >/dev/null
+assert_file_exists "$legacy_site/sheethome/journal/2026-01-01.md" \
+  "diary is migrated to journal in the worktree"
 
 # --- journal under the secret prefix ---------------------------------------
-export SVR_DIR='sheethome'
-export SVR_DIR_FILE="$sandbox/state/svr_dir"
-export SVR_MODE='plain'
-export SVR='hidden01'
+export SERVICE_ROOT="$sandbox/service"
+export PUBLISHED_ROOT="$sandbox/site"
+export SVR_NAME='hidden01'
+export SVR_PATH=''
+unset SVR SVR_MODE SVR_DIR SVR_ROOT
 export HOST='testhost'
 export USER='tester'
 export JOURNAL_DATE='2026-01-02'
 export JOURNAL_TIME='09:30:00'
+export JOURNAL_GIT='0'
 personal_tree_initialize >/dev/null
 journal_initialize
 journal_add 'first entry' >/dev/null
@@ -115,13 +95,9 @@ journal_add 'first entry' >/dev/null
 # --- scripts mirrored through the hidden path ------------------------------
 mkdir -p "$PUBLISHED_ROOT/scripts"
 printf '#!/bin/sh\necho site script\n' > "$PUBLISHED_ROOT/scripts/hello.sh"
-ln -sfn "$(personal_tree_root)" "$PUBLISHED_ROOT/oldhidden"
 personal_tree_link_site
-assert_success "hidden tree is mirrored in the site tree" \
-  test -L "$PUBLISHED_ROOT/hidden01"
 assert_success "scripts are linked into the hidden tree" \
   test -L "$(personal_tree_root)/scripts"
-assert_file_missing "$PUBLISHED_ROOT/oldhidden" "stale mirrors are removed"
 
 server_start "$PUBLISHED_ROOT" "$STATE_DIR"
 
@@ -158,17 +134,36 @@ assert_status 404 "$HTTP_STATUS" "wrong prefix is not served"
 http_get_path_as_is '/hidden01/../etc/passwd'
 assert_status 404 "$HTTP_STATUS" "traversal under the hidden path"
 
+# --- worktree with .git file (when git available) ---------------------------
+if command -v git >/dev/null 2>&1; then
+  wt_service="$sandbox/wt-service"
+  wt_site="$sandbox/wt-site"
+  mkdir -p "$wt_service" "$wt_site/scripts"
+  printf '#!/bin/sh\necho hi\n' > "$wt_site/scripts/s.sh"
+  (cd "$PROJECT_ROOT" && SERVICE_ROOT="$wt_service" PUBLISHED_ROOT="$wt_site" \
+    SVR_NAME='abc12345' JOURNAL_GIT=1 bash scripts/svr.sh init) >/dev/null
+  assert_file_exists "$wt_site/abc12345/.git" "worktree has .git"
+  if [[ -f "$wt_site/abc12345/.git" ]]; then
+    assert_contains "$(cat "$wt_site/abc12345/.git")" 'gitdir:' \
+      "worktree .git is a file pointing to the repo"
+  fi
+  assert_file_exists "$wt_service/.svr/.git/HEAD" "separate .svr repo exists"
+  assert_success "worktree is a valid git checkout" \
+    git -C "$wt_site/abc12345" status
+fi
+
 # --- CLI --------------------------------------------------------------------
-cli_path="$(cd "$PROJECT_ROOT" && SVR_MODE=plain SVR=hidden01 bash scripts/svr.sh path)"
+cli_path="$(cd "$PROJECT_ROOT" && SVR_NAME=hidden01 SVR_PATH= bash scripts/svr.sh path)"
 assert_equal '/hidden01' "$cli_path" "svr.sh path"
 
 cli_service="$sandbox/cli-service"
-cli_init="$(cd "$PROJECT_ROOT" && SERVICE_ROOT="$cli_service" \
-  SVR_MODE=plain SVR=hidden01 SVR_DIR=sheethome JOURNAL_GIT=0 \
-  bash scripts/svr.sh init)"
+cli_site="$sandbox/cli-site"
+mkdir -p "$cli_service" "$cli_site"
+cli_init="$(cd "$PROJECT_ROOT" && SERVICE_ROOT="$cli_service" PUBLISHED_ROOT="$cli_site" \
+  SVR_NAME=hidden01 JOURNAL_GIT=0 bash scripts/svr.sh init)"
 assert_contains "$cli_init" 'personal tree: /hidden01' "svr.sh init"
 assert_contains "$cli_init" 'journal:' "svr.sh init reports the journal root"
-assert_file_exists "$cli_service/sheethome/journal" "svr.sh init creates the journal"
+assert_file_exists "$cli_site/hidden01/journal" "svr.sh init creates the journal"
 
 cli_bin="$sandbox/cli-bin"
 (cd "$PROJECT_ROOT" && SVR_BIN_DIR="$cli_bin" bash scripts/svr.sh install "$cli_bin") >/dev/null

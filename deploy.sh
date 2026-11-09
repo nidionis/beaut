@@ -130,6 +130,12 @@ upload_site() {
     [[ -e "$entry" ]] || continue
     [[ -e "$entry/.git" ]] || continue
     name="$(basename -- "$entry")"
+    # A worktree has .git as a file (gitdir pointer) - it is the hidden svr tree,
+    # generated locally and managed on the server; never upload it.
+    if [[ -f "$entry/.git" ]]; then
+      archive_excludes+=("--exclude=./$name")
+      continue
+    fi
     has_command git || die "git is required for site repository: $name"
     remote_url="$(git -C "$entry" config --get remote.origin.url 2>/dev/null || true)"
     [[ -n "$remote_url" ]] || die "site repository $name has no origin remote"

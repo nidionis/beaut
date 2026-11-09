@@ -54,7 +54,8 @@ exported automatically — no export list to maintain.
 - `WG_PORT` / `WG_NETWORK` / `WG_SERVER_IP`: WireGuard
 - `DEVICE_DIRECTORY` / `DEVICE_REGISTRY`, `DEVICE_IDENTITY_DIRECTORY`: device identity
 - `INVITE_DIRECTORY` / `INVITE_REGISTRY`, `INVITE_DEFAULT_USES`, `INVITE_TTL_SECONDS`: invites
-- `SVR_MODE`, `SVR`, `SVR_PATH`, `SVR_SECRET`, `SVR_DIR`, `SVR_ROOT`, `SVR_PATH_FILE`, `SVR_DIR_FILE`: hidden personal tree
+- `SVR_NAME`, `SVR_REPO`, `SVR_TREE`, `SVR_NAME_FILE`: hidden personal tree worktree (name, git repo, worktree path)
+- `SVR_MODE`, `SVR`, `SVR_PATH`, `SVR_SECRET`, `SVR_DIR`, `SVR_ROOT`, `SVR_PATH_FILE`, `SVR_DIR_FILE`: legacy/backcompat hidden tree settings
 - `JOURNAL_DIR`, `JOURNAL_ROOT`, `PERSO_DIR`, `PERSO_ROOT`, `JOURNAL_REMOTE`, `PERSO_REMOTE`, `JOURNAL_REMOTE_HOST`, `JOURNAL_REMOTE_USER`, `JOURNAL_REMOTE_ROOT`, `JOURNAL_GIT`, `JOURNAL_EDITOR`, `SVR_BIN_DIR`, `SVR_INSTALL_PATH`: journal and install
 - `TOKEN_TTL_SECONDS`: token lifetime
 - `NOT_FOUND_BODY`, `ARCHIVE_MEMORY_DIVISOR`, `LOG_LEVEL`
@@ -88,8 +89,8 @@ directory serves `index.html`/`index.htm` when present, otherwise its first
 `DEFAU*.sh`, and finally a generated folder listing. Content type follows
 the extension (HTML, CSS, JavaScript, JSON, Markdown, images); scripts and
 unknown files stay `text/plain`. Dot-prefixed path segments are never served, so
-`.git` stays private. Nothing is executed server-side. The hidden tree is
-ordinary static files served under the secret prefix from `$SVR_ROOT`.
+`.git` stays private. Nothing is executed server-side. The hidden tree is a git worktree served
+under the secret prefix as ordinary static files.
 
 Text files in the published tree support `{{NAME}}` placeholders, replaced at
 serve time from configuration: `SERVER_HOST`, `HTTP_PORT`, `SERVICE_USER`,
@@ -115,15 +116,18 @@ site/
   notes/2026-01-02.md -> /notes/2026-01-02.md (text/markdown)
 ```
 
-After `svr.sh init`, the published tree also carries the hidden structure:
+After `svr.sh init`, the hidden structure is a real worktree in the published tree:
 
 ```
-$PUBLISHED_ROOT/<hidden>  -> $SVR_ROOT
-$SVR_ROOT/scripts         -> $PUBLISHED_ROOT/scripts
+$PUBLISHED_ROOT/<hidden>/          # worktree directory
+$PUBLISHED_ROOT/<hidden>/.git      # file: gitdir -> $SVR_REPO/.git/worktrees/<hidden>
+$SVR_REPO/                         # separate git repository ($SERVICE_ROOT/.svr)
+$PUBLISHED_ROOT/<hidden>/scripts   -> $PUBLISHED_ROOT/scripts
 ```
 
 So `/<hidden>/` shows the personal tree and `/<hidden>/scripts/` serves the same
-builtins as `/scripts/`, which stays public. `/scripts/` is not moved or hidden.
+builtins as `/scripts/`, which stays public. The worktree is generated/managed by
+`svr.sh`, excluded from site uploads, and preserved across `sync_site.sh` swaps.
 
 Resolution rules:
 
@@ -145,15 +149,15 @@ The sync builds the complete new tree beside the live one and swaps it, so a
 failed deploy leaves the previous tree intact and anything removed from `site/`
 disappears from the published tree.
 
-A top-level `site/<name>` folder that contains `.git` is treated as a separate
+A top-level `site/<name>` folder that contains a `.git` *directory* is treated as a separate
 git repository: its origin URL is recorded, the folder is **not** uploaded, and
-the server clones it (or fast-forwards an existing checkout) on deploy. It is
-served at `/<name>/` like any other tree. The origin must be reachable from the
-server (SSH or HTTPS).
+the server clones it (or fast-forwards an existing checkout) on deploy. A folder
+whose `.git` is a *file* is treated as a worktree (typically the hidden `SVR_NAME`
+tree) and is excluded from upload; it is managed on the server by `svr.sh init`.
 
-The hidden personal tree (`$SVR_ROOT`, URL `/<SVR_MODE path>`) uses the same
-file/default rules but is not part of `site/`; it stays personal and is never
-deployed from the repository.
+The hidden personal tree is the `$SVR_NAME` worktree inside the published tree,
+served only under `/<SVR_NAME>/` (or `SVR_PATH` override). It stays personal and
+is never deployed from the repository payload.
 
 ## Node
 
@@ -217,31 +221,32 @@ on-disk directory is hidden too:
 ```bash
 scripts/svr.sh init                 # tree + journal/perso git repositories
 scripts/svr.sh status               # mode, URL path, roots and remotes
-scripts/svr.sh path                 # -> /8randomchars
+scripts/svr.sh path                 # -> /<SVR_NAME>
+scripts/svr.sh link                 # link scripts into the hidden worktree
 scripts/svr.sh install              # journal/journal-perso in ~/.local/bin (+PATH)
-scripts/svr.sh sync                 # pull and push both journals
-scripts/svr.sh remote <url>         # set the journal origin (crash recovery)
+scripts/svr.sh sync                 # pull and push the .svr worktree
+scripts/svr.sh remote <url>         # set the .svr git remote
 
 journal [subfolder] <name>          # installed reference-compatible command
 journal-perso [name]
 ```
 
-`SVR_DIR` chooses the on-disk directory name. When it is empty, a hidden
-`.svr-<8 random>` name is generated once and persisted in `state/svr_dir`
-(mode 600); changing `SVR_DIR` moves the existing tree to the new directory.
-The URL prefix is independent: `SVR_PATH` pins it explicitly (random by
-default); `SVR_MODE=random` uses eight lowercase alphanumeric characters
-persisted in `state/svr_path`; `sha` derives them from
-`sha256("beaut-svr:" + SVR_SECRET)`; `plain` uses an explicit `SVR` value.
-`svr.sh init` also migrates the historical `$SERVICE_ROOT/svr` tree and its
-`diary/` directory to the new layout.
+`SVR_NAME` sets the hidden 8-alnum name (used as the URL prefix and the
+worktree directory). When empty, a random name is generated once and persisted
+in `state/svr_name` (mode 600). `SVR_REPO` defaults to `$SERVICE_ROOT/.svr` and
+holds the separate git repository; `$PUBLISHED_ROOT/$SVR_NAME` is a git worktree
+whose `.git` file points into that repo, so `tree site/` shows the hidden folder.
+`SVR_PATH` may override the URL prefix for backcompat. Legacy `SVR_DIR`/`SVR_ROOT`
+/`SVR_MODE` variables are still accepted. `svr.sh init` migrates the historical
+`$SERVICE_ROOT/svr` tree, its `diary/` directory, and legacy `.svr-*` hidden
+directories into the worktree.
 
 The journal is a port of `~/.svr/usr/bin/journal`:
 
 ```
-$SVR_ROOT/journal/YYYY/MM/DD/<subfolder>/<name>.md
-$SVR_ROOT/journal/<host>/<subfolder>/<name>.md   (hard-link view)
-$SVR_ROOT/journal/index.html                     (generated index)
+$PUBLISHED_ROOT/$SVR_NAME/journal/YYYY/MM/DD/<subfolder>/<name>.md
+$PUBLISHED_ROOT/$SVR_NAME/journal/<host>/<subfolder>/<name>.md   (hard-link view)
+$PUBLISHED_ROOT/$SVR_NAME/journal/index.html                     (generated index)
 ```
 
 Each new file starts with the reference header (YYMMDD, time, user, host,
@@ -253,14 +258,14 @@ use. `JOURNAL_GIT=0` disables git. `JOURNAL_REMOTE` (or
 `user@host:<server hidden tree>/<journal>`, with `JOURNAL_REMOTE_ROOT` pinning
 the server path when the command runs elsewhere. Re-run `remote` after a
 restore to point a recovered server at the new address. `journal-perso`
-behaves the same in `$SVR_ROOT/perso` with the `fouretout` default subfolder.
+behaves the same in `$PUBLISHED_ROOT/$SVR_NAME/perso` with the `fouretout` default subfolder.
 
 Nothing in the tree is public: requests outside the secret prefix never reach
 it, and dot-prefixed segments such as `.git` are never served. The generated
-`index.html` makes `/<hidden>/journal/` browsable. `svr.sh init` mirrors the
-tree as `$PUBLISHED_ROOT/<hidden>` and links `$SVR_ROOT/scripts` to the public
-`$PUBLISHED_ROOT/scripts`, so the structure is visible in the site tree without
-making the journal public.
+`index.html` makes `/<hidden>/journal/` browsable. The worktree's `scripts` link
+points to the public `$PUBLISHED_ROOT/scripts`, so `/<hidden>/scripts/` works
+while `/scripts/` stays public. The `.git` *file* in the worktree is not served
+(dot-segment protection).
 
 ## Virtual secrets and paths
 

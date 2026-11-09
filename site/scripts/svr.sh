@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# svr.sh — hidden personal tree, git-backed journal and command installer.
+# svr.sh — hidden personal tree (git worktree), git-backed journal and installer.
 #
-# The tree lives in $SVR_ROOT (SVR_DIR or a random hidden name), is served only
-# under the secret URL prefix, and contains:
-#   journal/  reference-compatible journal git repository
-#   perso/    personal journal git repository
+# The tree is a git worktree at $PUBLISHED_ROOT/$SVR_NAME (or $SVR_TREE),
+# backed by the separate repository $SVR_REPO ($SERVICE_ROOT/.svr). The
+# worktree's .git file points into $SVR_REPO, so the hidden structure is visible
+# in the site tree while the data lives in its own repository.
+#
+#   journal/  reference-compatible journal (tracked in the .svr repo)
+#   perso/    personal journal (tracked in the .svr repo)
 #   notes/    free-form static notes
 set -uo pipefail
 
@@ -17,14 +20,15 @@ load_config
 usage() {
   cat >&2 <<'EOF'
 usage: svr.sh <command>
-  init                    create the hidden tree and journal repositories
+  init                    create the .svr repo, worktree and journal structure
+  link                    link scripts into the hidden worktree
   install [bin_dir]       install journal and journal-perso in the user PATH
   path                    print the secret URL prefix
-  status                  print mode, path, roots and remotes
+  status                  print name, path, repo, worktree roots and remotes
   journal ...             add/list/show/sync/remote, or [subfolder] <name>
   journal-perso ...       personal journal, or [subfolder] <name>
-  sync                    pull and push both journals
-  remote [url]            show or set the journal git remote
+  sync                    pull and push the .svr worktree
+  remote [url]            show or set the git remote for the hidden repo
 EOF
   exit 2
 }
@@ -108,16 +112,16 @@ svr_remote() {
 }
 
 svr_status() {
-  local root journal perso remote
-  root="$(personal_tree_root)" || return 1
+  local name tree repo journal perso remote
+  name="$(personal_tree_name)" || return 1
+  tree="$(personal_tree_root)" || return 1
+  repo="$(personal_tree_repo)" || return 1
   journal="$(journal_root)" || return 1
   perso="$(journal_perso_root)" || return 1
-  printf 'mode: %s\npath: %s\nroot: %s\njournal: %s\nperso: %s\n' \
-    "${SVR_MODE:-random}" "$(personal_tree_url_path)" "$root" "$journal" "$perso"
-  remote="$(journal_remote_get "$journal" 2>/dev/null || true)"
-  [[ -n "$remote" ]] && printf 'journal remote: %s\n' "$remote"
-  remote="$(journal_remote_get "$perso" 2>/dev/null || true)"
-  [[ -n "$remote" ]] && printf 'perso remote: %s\n' "$remote"
+  printf 'name: %s\npath: %s\nrepo: %s\ntree: %s\njournal: %s\nperso: %s\n' \
+    "$name" "$(personal_tree_url_path)" "$repo" "$tree" "$journal" "$perso"
+  remote="$(journal_remote_get "$tree" 2>/dev/null || journal_remote_get "$repo" 2>/dev/null || true)"
+  [[ -n "$remote" ]] && printf 'remote: %s\n' "$remote"
   return 0
 }
 
@@ -131,8 +135,16 @@ case "$command" in
     journal_initialize || exit 1
     journal_perso_initialize || exit 1
     personal_tree_link_site || exit 1
-    printf 'personal tree: /%s\nroot: %s\njournal: %s\nperso: %s\n' \
-      "$path" "$(personal_tree_root)" "$(journal_root)" "$(journal_perso_root)"
+    # Commit the initialized structure into the .svr worktree.
+    if [[ "${JOURNAL_GIT:-1}" == "1" ]] && has_command git; then
+      journal_git_run "$(personal_tree_root)" add -A >/dev/null 2>&1 || true
+      journal_git_run "$(personal_tree_root)" commit -m "svr: initialize $path" >/dev/null 2>&1 || true
+    fi
+    printf 'personal tree: /%s\nrepo: %s\ntree: %s\njournal: %s\nperso: %s\n' \
+      "$path" "$(personal_tree_repo)" "$(personal_tree_root)" "$(journal_root)" "$(journal_perso_root)"
+    ;;
+  link)
+    personal_tree_link_site || exit 1
     ;;
   install)
     svr_install "${1:-}" || exit 1
@@ -145,11 +157,10 @@ case "$command" in
     svr_status || exit 1
     ;;
   sync)
-    journal_sync "$(journal_root)"
-    journal_sync "$(journal_perso_root)"
+    journal_sync "$(personal_tree_root)"
     ;;
   remote)
-    svr_remote "$(journal_root)" "${1:-}" || exit 1
+    svr_remote "$(personal_tree_root)" "${1:-}" || exit 1
     ;;
   journal)
     action="${1:-}"
@@ -168,11 +179,11 @@ case "$command" in
         journal_show "$@"
         ;;
       sync)
-        journal_sync "$(journal_root)"
+        journal_sync "$(personal_tree_root)"
         ;;
       remote)
         shift
-        svr_remote "$(journal_root)" "${1:-}" || exit 1
+        svr_remote "$(personal_tree_root)" "${1:-}" || exit 1
         ;;
       *)
         journal_open "$@"
@@ -192,7 +203,7 @@ case "$command" in
         JOURNAL_ROOT="$(journal_perso_root)" journal_show "$@"
         ;;
       sync)
-        journal_sync "$(journal_perso_root)"
+        journal_sync "$(personal_tree_root)"
         ;;
       *)
         journal_perso_open "$@"
