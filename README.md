@@ -185,6 +185,9 @@ services:
       - ${SERVICE_STATE}:/data
 ```
 
+On SELinux hosts, label the bind mount (`${SERVICE_STATE}:/data:z`) or the
+container may not be able to write.
+
 Only `$SERVICE_STATE` is replicated. The server keeps the latest snapshot, so
 writes after the last sync can be lost if the active worker fails. Leases and
 routes are stored beside it in `lease.tsv` and `routes.tsv`; the router keeps
