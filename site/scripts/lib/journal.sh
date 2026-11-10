@@ -53,11 +53,6 @@ journal_perso_root() {
   fi
 }
 
-# Historical alias.
-journal_directory() {
-  journal_root
-}
-
 journal_date() {
   printf '%s' "${JOURNAL_DATE:-$(date +%F)}"
 }

@@ -230,18 +230,5 @@ personal_tree_initialize() {
   printf '%s' "$name"
 }
 
-# Backcompat aliases
-personal_tree_repo() { personal_tree_root; }
-personal_tree_directory_name() { personal_tree_name; }
-personal_tree_migrate() { :; }
+# Legacy root (migration source)
 personal_tree_legacy_root() { [[ -n "${SERVICE_ROOT:-}" ]] && printf '%s/svr' "$SERVICE_ROOT"; }
-personal_tree_published_root() { printf '%s' "${PUBLISHED_ROOT:-${SITE:-}}"; }
-personal_tree_match_path() {
-  local url_path="${1:-}" hidden
-  hidden="$(personal_tree_name 2>/dev/null)" || return 1
-  case "$url_path" in
-    "$hidden") printf ''; return 0 ;;
-    "$hidden"/*) printf '%s' "${url_path#"$hidden"/}"; return 0 ;;
-  esac
-  return 1
-}

@@ -19,3 +19,6 @@ boinc/
 # macOS / editors
 .DS_Store
 .idea/
+tags
+.junie/
+context/
