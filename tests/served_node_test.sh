@@ -45,6 +45,11 @@ assert_contains "$node_output" 'result sent to /done/' "node reports the result"
 assert_contains "$node_output" '(exit: 0)' "command succeeded"
 assert_equal "" "$(ls -A "$empty_directory")" "node leaves no client files"
 
+done_id="$(printf '%s\n' "$node_output" | sed -n 's/^id received: //p')"
+http_get "/done/$done_id"
+assert_status 200 "$HTTP_STATUS" "result can be read back"
+assert_equal 'hello-world' "$HTTP_BODY" "result body"
+
 # /join must not be served anymore.
 http_get /join
 assert_status 404 "$HTTP_STATUS" "/join should be unpublished"

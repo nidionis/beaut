@@ -11,8 +11,8 @@ and every surface stays replaceable: no backcompat aliases, no hidden modes.
 
 - **HTTP control plane** — `http_server.sh` (socat or the C relay) and
   `http_handler.sh`. Fictive work ids, `/work/<id>` returning
-  `$SVR_ROOT/command`, `/done/<id>` archiving results, static trees limited to
-  `PUBLISHED_ROOT` and `SVR_ROOT`.
+  `$SVR_ROOT/command`, `/done/<id>` archiving and returning results, static
+  trees limited to `PUBLISHED_ROOT` and `SVR_ROOT`.
 - **Personal tree** — `SVR_ROOT` (`~/.svr`) is a separate git repository.
   `$PUBLISHED_ROOT/$SVR_NAME` is a symlink to it; `SVR_NAME` is generated once
   and persisted. `scripts/` is linked inside the tree while `/scripts/` stays

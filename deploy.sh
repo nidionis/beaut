@@ -216,7 +216,7 @@ configure_network() {
 wait_for_server() {
   local attempt
   for attempt in {1..10}; do
-    curl -fsS "http://$SERVER_HOST:$HTTP_PORT/work" >/dev/null 2>&1 && return 0
+    curl -fsS "http://$SERVER_HOST:$HTTP_PORT/node" >/dev/null 2>&1 && return 0
     sleep 1
   done
   log error "server unreachable on http://$SERVER_HOST:$HTTP_PORT (~/.beaut/state/http.log, journal: systemctl --user -u beaut.service)"

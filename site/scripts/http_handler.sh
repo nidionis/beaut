@@ -3,9 +3,10 @@
 # The server never executes work: it serves files/scripts and issues fictive ids.
 #
 # Dynamic routes (priority):
-#   GET  /work          -> return a fictive id
+#   GET  /work          -> issue a fictive id
 #   GET  /work/<id>     -> return the command (from $SVR_ROOT/command)
 #   POST /done/<id>     -> archive the posted result
+#   GET  /done/<id>     -> return the archived result
 #   POST /get           -> dataset request (body: key=value&key=value)
 #   GET  /signin        -> enrollment instructions
 #   POST /signin        -> accept a device public key (invite auto-accepts)
@@ -28,8 +29,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 load_config
 
 STATE_DB="$STATE_DIR/db.tsv"
+WORK_DB="$STATE_DIR/work.tsv"
 svr_root="${SVR_ROOT:-$HOME/.svr}"
 state_init
+state_file_init "$STATE_DIR" "$WORK_DB"
 
 not_found() {
   http_send_response 404 "${NOT_FOUND_BODY:-404}"
@@ -42,21 +45,51 @@ archive_result() {
   local archive_dir="$STATE_DIR/archive/$day"
   mkdir -p "$archive_dir"
 
-  local total_kb=0 available_kb=0 memory_threshold_kb
-  read -r total_kb available_kb < <(
-    awk '/MemTotal/{total=$2} /MemAvailable/{available=$2} END{print total+0, available+0}' \
-      /proc/meminfo 2>/dev/null
-  )
-  memory_threshold_kb=$(( total_kb / ARCHIVE_MEMORY_DIVISOR ))
-  if [[ "$available_kb" -le "$memory_threshold_kb" ]]; then
-    log warn "archive skipped: available RAM=${available_kb}KB <= threshold=${memory_threshold_kb}KB"
-    return 0
-  fi
-
   local timestamp; timestamp="$(date +%s)"
   local node_name; node_name="$(hostname 2>/dev/null || echo unknown)"
+  printf '%s' "$result" > "$archive_dir/$work_id"
+  chmod 600 "$archive_dir/$work_id" 2>/dev/null || true
   state_append "$STATE_DB" archive "$day" "$work_id" "$node_name" "$result" "$timestamp" "" ""
   state_append "$archive_dir/results.tsv" "$work_id" "$node_name" "$result" "$timestamp" "" "" "" ""
+}
+
+# --- work lifecycle ---------------------------------------------------------
+work_id_valid() {
+  [[ "${1:-}" =~ ^[0-9]+\.[0-9]+$ ]]
+}
+
+work_pending() {
+  state_has "$WORK_DB" 1 "${1:-}"
+}
+
+work_archived() {
+  state_has "$STATE_DB" 3 "${1:-}"
+}
+
+serve_result() {
+  local work_id="$1" row day result_file
+  row="$(state_find "$STATE_DB" 3 "$work_id")"
+  [[ -n "$row" ]] || { not_found; return; }
+  day="$(state_field "$row" 2)"
+  result_file="$STATE_DIR/archive/$day/$work_id"
+  if [[ -f "$result_file" ]]; then
+    http_send_file "$result_file" raw
+  else
+    http_send_response 200 "$(state_field "$row" 5)"
+  fi
+}
+
+finish_work() {
+  local work_id="$1" result="$2"
+  if work_archived "$work_id"; then
+    http_send_response 200 "confirmed: $work_id"
+  elif work_pending "$work_id"; then
+    archive_result "$work_id" "$result"
+    state_remove "$WORK_DB" 1 "$work_id"
+    http_send_response 200 "confirmed: $work_id"
+  else
+    not_found
+  fi
 }
 
 # --- static tree ------------------------------------------------------------
@@ -215,23 +248,29 @@ work_command() {
 case "$url_path" in
   work)
     work_id="$(date +%s%N 2>/dev/null || echo "$$.$(date +%s)").$RANDOM"
+    state_append "$WORK_DB" "$work_id" "$(date +%s)"
     http_send_response 200 "$work_id"
     ;;
   work/*)
     work_id="${url_path#work/}"
     if [[ -z "$work_id" ]]; then
       http_send_response 400 "missing id"
-    else
+    elif work_id_valid "$work_id" && work_pending "$work_id"; then
       http_send_response 200 "$(work_command)"
+    else
+      not_found
     fi
     ;;
   done/*)
     work_id="${url_path#done/}"
     if [[ -z "$work_id" ]]; then
       http_send_response 400 "missing id"
+    elif ! work_id_valid "$work_id"; then
+      not_found
+    elif [[ "${http_method^^}" == "POST" ]]; then
+      finish_work "$work_id" "$request_body"
     else
-      archive_result "$work_id" "$request_body"
-      http_send_response 200 "confirmed: $work_id"
+      serve_result "$work_id"
     fi
     ;;
   get)

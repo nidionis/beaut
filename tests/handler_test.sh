@@ -45,9 +45,30 @@ http_get "/work/$work_id"
 assert_status 200 "$HTTP_STATUS" "GET /work/<id> returns the command"
 assert_equal 'echo from-svr-command' "$HTTP_BODY" "command from SVR_ROOT/command"
 
-http_post "/done/$work_id" 'output=hello-world'
+http_post "/done/$work_id" 'hello-world'
 assert_status 200 "$HTTP_STATUS" "POST /done/<id> confirms"
 assert_contains "$HTTP_BODY" "confirmed: $work_id" "confirmation body"
+
+http_get "/done/$work_id"
+assert_status 200 "$HTTP_STATUS" "GET /done/<id> returns the result"
+assert_equal 'hello-world' "$HTTP_BODY" "archived result body"
+
+http_post "/done/$work_id" 'duplicate'
+assert_status 200 "$HTTP_STATUS" "duplicate result is acknowledged"
+http_get "/done/$work_id"
+assert_equal 'hello-world' "$HTTP_BODY" "duplicate result does not overwrite"
+
+http_get /work/2
+assert_status 404 "$HTTP_STATUS" "unknown work id has no command"
+http_get /done/2
+assert_status 404 "$HTTP_STATUS" "unknown done id has no result"
+http_post /done/2 'nope'
+assert_status 404 "$HTTP_STATUS" "unknown done id cannot be confirmed"
+
+http_get /work
+pending_id="$HTTP_BODY"
+http_get "/done/$pending_id"
+assert_status 404 "$HTTP_STATUS" "pending work has no result"
 
 # --- /get -------------------------------------------------------------------
 http_post /get "dataset=sample"

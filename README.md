@@ -80,7 +80,7 @@ with `set -a`, so no export list is needed.
 |-------|-----------|
 | Identity | `SERVICE_USER`, `BOOTSTRAP_USER`, `SSH_PRIVATE_KEY` |
 | Layout | `SERVICE_ROOT`, `STATE_DIR`, `PUBLISHED_ROOT` |
-| Server | `SERVER_HOST`, `HTTP_PORT`, `LOG_LEVEL`, `NOT_FOUND_BODY`, `ARCHIVE_MEMORY_DIVISOR` |
+| Server | `SERVER_HOST`, `HTTP_PORT`, `LOG_LEVEL`, `NOT_FOUND_BODY` |
 | WireGuard | `WG_PORT`, `WG_NETWORK`, `WG_SERVER_IP`, `WG_KEY_DIRECTORY` |
 | Devices | `DEVICE_DIRECTORY`, `DEVICE_REGISTRY`, `DEVICE_IDENTITY_DIRECTORY`, `DOOR_DEVICE_ID` |
 | Invites | `INVITE_DIRECTORY`, `INVITE_REGISTRY`, `INVITE_DEFAULT_USES`, `INVITE_TTL_SECONDS`, `INVITE_WORD_COUNT` |
@@ -97,9 +97,10 @@ C relay in `site/scripts/http_server.c`. One connection is handled by
 
 | Route | Role |
 |-------|------|
-| `GET /work` | return a new fictive id |
+| `GET /work` | issue a new fictive id (`state/work.tsv`) |
 | `GET /work/<id>` | return the command from `$SVR_ROOT/command` |
 | `POST /done/<id>` | archive the posted result |
+| `GET /done/<id>` | return the archived result |
 | `POST /get` | dataset request (`key=value&key=value`) |
 | `GET /signin` | enrollment instructions |
 | `POST /signin` | accept a device public key; a valid invite auto-accepts |
@@ -115,6 +116,11 @@ Content type follows the extension; scripts and unknown files stay `text/plain`.
 Dot-prefixed segments are never served, so `.git` stays private. Public text
 files render `{{NAME}}` placeholders (`SERVER_HOST`, `HTTP_PORT`,
 `SERVICE_USER`, `WG_*`); the personal tree and journal are streamed raw.
+
+`/work` records the issued id; `/work/<id>` and `/done/<id>` reject unknown ids.
+A result can be posted once per id, then read back with `GET /done/<id>`.
+Results are stored under `state/archive/YYYY-MM-DD/<id>` and indexed in
+`state/db.tsv`.
 
 ## Node
 

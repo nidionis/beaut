@@ -23,8 +23,8 @@ http_request() {
       "http://$SERVER_HOST:$HTTP_PORT$path")"
   else
     http_status="$(curl -s -o "$response_file" -w '%{http_code}' \
-      -X POST -H 'Content-Type: application/x-www-form-urlencoded' \
-      --data "$data" "http://$SERVER_HOST:$HTTP_PORT$path")"
+      -X POST -H 'Content-Type: text/plain; charset=utf-8' \
+      --data-binary "$data" "http://$SERVER_HOST:$HTTP_PORT$path")"
   fi
   http_body="$(cat "$response_file")"
   rm -f -- "$response_file"
@@ -57,7 +57,7 @@ output="$(sh -c "$task_command" 2>&1)"
 exit_code=$?
 
 # 4. Report the result
-http_request POST "/done/$work_id" "output=$output"
+http_request POST "/done/$work_id" "$output"
 if [ "$http_status" != "200" ]; then
   printf 'failure: could not report result (HTTP %s)\n' "$http_status" >&2
 fi

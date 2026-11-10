@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# lib/state.sh — TSV helpers. state/db.tsv stores archived results:
+# lib/state.sh — TSV helpers. state/db.tsv stores archived results and
+# state/work.tsv stores the fictive ids issued by /work.
 #   type=archive | day | id | node | result | timestamp
 state_find() {
   local file="${1:?missing file}" column="${2:?missing column}" value="${3:?missing value}"
