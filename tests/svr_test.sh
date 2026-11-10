@@ -34,8 +34,7 @@ assert_equal "$random_name" "$(personal_tree_name)" "name is stable"
 assert_file_exists "$(personal_tree_root)/DEFAULT.sh" "static default script"
 assert_file_exists "$(personal_tree_root)/notes" "notes directory"
 
-journal_initialize
-assert_file_exists "$(personal_tree_root)/journal" "journal directory"
+# journal is independent (~/journal by default), not owned by svr
 
 # --- explicit SVR_NAME and SVR_ROOT -----------------------------------------
 export SVR_NAME='named01'
@@ -69,6 +68,7 @@ export USER='tester'
 export JOURNAL_DATE='2026-01-02'
 export JOURNAL_TIME='09:30:00'
 export JOURNAL_GIT='0'
+export JOURNAL_ROOT="$SERVICE_ROOT/.svr/journal"
 mkdir -p "$PUBLISHED_ROOT"
 personal_tree_initialize >/dev/null
 journal_initialize
@@ -134,8 +134,6 @@ mkdir -p "$cli_service" "$cli_site"
 cli_init="$(cd "$PROJECT_ROOT" && SERVICE_ROOT="$cli_service" PUBLISHED_ROOT="$cli_site" \
   SVR_NAME=hidden01 SVR_ROOT="$cli_service/.svr" JOURNAL_GIT=0 bash scripts/svr.sh init)"
 assert_contains "$cli_init" 'personal tree: /hidden01' "svr.sh init"
-assert_contains "$cli_init" 'journal:' "svr.sh init reports journal"
-assert_file_exists "$cli_service/.svr/journal" "svr.sh init creates journal"
 assert_success "svr.sh init creates site symlink" test -L "$cli_site/hidden01"
 
 cli_bin="$sandbox/cli-bin"

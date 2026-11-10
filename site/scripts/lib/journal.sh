@@ -28,12 +28,10 @@ journal_root() {
   else
     name="${JOURNAL_DIR:-journal}"
     journal_validate_component "$name" || name=journal
-    if [[ -n "${SVR_ROOT:-}" ]]; then
-      printf '%s/%s' "$SVR_ROOT" "$name"
-    elif declare -F personal_tree_root >/dev/null 2>&1; then
-      printf '%s/%s' "$(personal_tree_root)" "$name"
+    if [[ -n "${JOURNAL_BASE:-}" ]]; then
+      printf '%s/%s' "$JOURNAL_BASE" "$name"
     else
-      printf '%s/%s' "${SERVICE_ROOT:-${HOME:-}/.beaut}/.svr" "$name"
+      printf '%s/%s' "${HOME:-${SERVICE_ROOT:-/tmp}}" "$name"
     fi
   fi
 }
@@ -45,12 +43,12 @@ journal_perso_root() {
   else
     name="${PERSO_DIR:-perso}"
     journal_validate_component "$name" || name=perso
-    if [[ -n "${SVR_ROOT:-}" ]]; then
-      printf '%s/%s' "$SVR_ROOT" "$name"
-    elif declare -F personal_tree_root >/dev/null 2>&1; then
-      printf '%s/%s' "$(personal_tree_root)" "$name"
+    if [[ -n "${JOURNAL_BASE:-}" ]]; then
+      printf '%s/%s' "$JOURNAL_BASE" "$name"
+    elif [[ -n "${PERSO_BASE:-}" ]]; then
+      printf '%s/%s' "$PERSO_BASE" "$name"
     else
-      printf '%s/%s' "${SERVICE_ROOT:-${HOME:-}/.beaut}/.svr" "$name"
+      printf '%s/%s' "${HOME:-${SERVICE_ROOT:-/tmp}}" "$name"
     fi
   fi
 }
@@ -236,12 +234,19 @@ journal_remote_resolve() {
       }
       base="${JOURNAL_REMOTE_ROOT:-}"
       if [[ -z "$base" ]]; then
-        base="${SVR_ROOT:-${SERVICE_ROOT:-$HOME/.${SERVICE_USER:-beaut}}/.svr}"
+        # Default: ~/journal (or configured JOURNAL_REMOTE_PATH) on the server.
+        base="${JOURNAL_REMOTE_PATH:-~/${JOURNAL_DIR:-journal}}"
+        # For perso, use perso name when resolving perso root.
+        if [[ "$(basename "$root")" == "${PERSO_DIR:-perso}" ]]; then
+          base="${PERSO_REMOTE_PATH:-${JOURNAL_REMOTE_PATH:-~/${PERSO_DIR:-perso}}}"
+        fi
       fi
       local port="${JOURNAL_SSH_PORT:-${SSH_PORT:-}}"
       local repo_path="$base/$(basename "$root")"
       # Prefer .git bare/normal repo path when it exists conceptually.
-      [[ -d "$repo_path.git" || "${JOURNAL_REMOTE_STYLE:-}" == "bare" ]] && repo_path="$repo_path.git"
+      if [[ "${JOURNAL_REMOTE_STYLE:-}" == "bare" ]] || [[ -d "$repo_path.git" && "${JOURNAL_REMOTE_STYLE:-}" != "plain" ]]; then
+        repo_path="$repo_path.git"
+      fi
       if [[ -n "$port" && "$port" != "22" ]]; then
         printf 'ssh://%s@%s:%s/%s' "$user" "$host" "$port" "${repo_path#/}"
       else
