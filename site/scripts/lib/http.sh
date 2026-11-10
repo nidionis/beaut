@@ -10,6 +10,7 @@ http_reason_phrase() {
     302) printf 'Found' ;;
     400) printf 'Bad Request' ;;
     404) printf 'Not Found' ;;
+    409) printf 'Conflict' ;;
     *)   printf 'OK' ;;
   esac
 }

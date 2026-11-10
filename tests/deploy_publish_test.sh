@@ -45,6 +45,8 @@ assert_not_contains "$deploy_text" 'shared/' "the published tree is the site tre
 remote_install_text="$(cat "$PROJECT_ROOT/site/deploy/remote_install.sh")"
 assert_contains "$remote_install_text" 'systemctl --user restart beaut.service' \
   "upgrades restart the running service"
+assert_contains "$remote_install_text" 'systemctl --user restart beaut-router.service' \
+  "upgrades restart the TCP router"
 remote_run_line="$(printf '%s\n' "$deploy_text" | grep '^remote_run()')"
 assert_contains "$remote_run_line" 'ssh -T' "stdin-fed remote scripts keep stdin open"
 assert_not_contains "$remote_run_line" 'ssh -n' "stdin-fed remote scripts do not discard stdin"

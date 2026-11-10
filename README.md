@@ -5,6 +5,10 @@ metadata over HTTP; nodes fetch and run them (`curl … | sh`). The server never
 executes work. Work requests carry fictive ids, and the command is read from
 `$SVR_ROOT/command`.
 
+Long-running services run on workers. The server forwards raw TCP ports to the
+worker holding the service lease; a standby claims the lease and takes over when
+that worker stops.
+
 ## Repository
 
 - `deploy.sh` — SSH orchestrator for a remote server.
@@ -23,6 +27,7 @@ executes work. Work requests carry fictive ids, and the command is read from
     config.env               optional local overrides (git-ignored)
     config.env.example       schema and defaults
     state/                   TSV tables, devices, invites, keys, archive
+      services/<name>/       lease.tsv, routes.tsv, state/ snapshots
     site/                    PUBLISHED_ROOT
       <SVR_NAME> -> ~/.svr   personal tree (served as /<SVR_NAME>/)
       scripts/               builtins (served as /scripts/)
@@ -30,6 +35,7 @@ executes work. Work requests carry fictive ids, and the command is read from
       node/                  generated /node artifact
   .svr/                      SVR_ROOT: personal git repository
     command                  command served by /work/<id>
+    service/<name>/          ports manifest and compose file
     DEFAULT.sh               page for /<SVR_NAME>
     notes/
     journal -> ~/journal     independent journal tree
@@ -60,7 +66,9 @@ with `site/deploy/install_privileged.sh`.
 Everything else runs as `SERVICE_USER` with key authentication only:
 `config.env`, the site tree, the personal tree, journal commands, device
 identity, and `site/deploy/remote_install.sh` (systemd user service, or a
-`setsid` fallback).
+`setsid` fallback). The installer also enables `beaut-router.service`, which
+binds claimed public ports with `socat`. Install `socat` on the server; the HTTP
+server can fall back to its C relay, but TCP forwarding cannot.
 
 `--no-root` skips sudo, WireGuard and the device identity.
 
@@ -85,6 +93,7 @@ with `set -a`, so no export list is needed.
 | Devices | `DEVICE_DIRECTORY`, `DEVICE_REGISTRY`, `DEVICE_IDENTITY_DIRECTORY`, `DOOR_DEVICE_ID` |
 | Invites | `INVITE_DIRECTORY`, `INVITE_REGISTRY`, `INVITE_DEFAULT_USES`, `INVITE_TTL_SECONDS`, `INVITE_WORD_COUNT` |
 | Personal tree | `SVR_NAME`, `SVR_ROOT`, `SVR_BIN_DIR`, `SVR_INSTALL_PATH` |
+| Services | `SERVICE_DIRECTORY`, `SERVICE_LEASE_SECONDS`, `SERVICE_ROUTER_INTERVAL`, `SERVICE_SSH_PORT` |
 | Journal | `JOURNAL_DIR`, `JOURNAL_ROOT`, `JOURNAL_BASE`, `PERSO_DIR`, `PERSO_ROOT`, `JOURNAL_SUBFOLDER`, `PERSO_SUBFOLDER`, `JOURNAL_GIT`, `JOURNAL_GIT_NAME`, `JOURNAL_GIT_EMAIL`, `JOURNAL_EDITOR` |
 | Journal remote | `JOURNAL_REMOTE`, `PERSO_REMOTE`, `JOURNAL_REMOTE_HOST`, `JOURNAL_REMOTE_USER`, `JOURNAL_REMOTE_PATH`, `PERSO_REMOTE_PATH`, `JOURNAL_SSH_PORT` |
 | Attributions | `ATTRIBUTION_DIRECTORY`, `ATTRIBUTION_REGISTRY`, `ATTRIBUTION_WORD_COUNT`, `ATTRIBUTION_SECRET_BYTES`, `ATTRIBUTION_PATH_NAMESPACE`, `ATTRIBUTION_DICTIONARY` |
@@ -106,6 +115,11 @@ C relay in `site/scripts/http_server.c`. One connection is handled by
 | `POST /signin` | accept a device public key; a valid invite auto-accepts |
 | `GET /signin/<id>` | device status |
 | `GET /door` | default server public key, endpoint and network |
+| `POST /service/<name>/claim` | claim or renew a service lease (`worker=<address>`) |
+| `POST /service/<name>/heartbeat` | renew the lease |
+| `POST /service/<name>/release` | release the lease and remove its routes |
+| `GET /service/<name>/status` | lease owner, expiry and routes |
+| `GET /service/<name>/run` | shell command that starts a worker |
 | `GET /<SVR_NAME>/...` | personal tree, including `journal/` |
 | `GET /<path>` | public tree: file, `index.html`, `DEFAU*.sh`, or listing |
 
@@ -121,6 +135,61 @@ files render `{{NAME}}` placeholders (`SERVER_HOST`, `HTTP_PORT`,
 A result can be posted once per id, then read back with `GET /done/<id>`.
 Results are stored under `state/archive/YYYY-MM-DD/<id>` and indexed in
 `state/db.tsv`.
+
+## Services
+
+A long-running service is a directory in the personal tree:
+
+```
+~/.svr/service/<name>/
+  ports          <public_port> <app_port>   one mapping per line
+  compose.yml    or compose.yaml / docker-compose.yml / docker-compose.yaml
+```
+
+The server owns the public port; the app listens on `app_port` on the worker.
+`ports` accepts blank lines and `#` comments. Use unprivileged public ports
+(>1024) unless `SERVICE_USER` may bind low ports. Changing `ports` takes effect
+on the next claim.
+
+One worker holds the lease. Others poll as standbys. The active worker runs
+`docker compose up -d`, heartbeats every 5s, and renews a 15s lease. When the
+lease expires, a standby claims it, restores the latest state snapshot, starts
+compose, and the router switches the public ports to it. The old worker stops
+its containers when it sees the lease lost, or after three failed heartbeats. A
+killed worker cannot stop its own containers; the router still moves traffic,
+and only the current owner writes state snapshots. The timings are configurable
+with `SERVICE_LEASE_SECONDS` and the worker's `SERVICE_HEARTBEAT_SECONDS` /
+`SERVICE_SYNC_SECONDS` environment variables.
+
+Start a worker on a Docker host:
+
+```bash
+curl -fsS "http://$SERVER_HOST:$HTTP_PORT/service/<name>/run" | sh
+```
+
+The worker needs `docker` with Compose, `git`, `rsync`, and SSH access to
+`SERVICE_USER@SERVER_HOST`. It clones `~/.svr` or pulls the checkout, so commit
+and push the service directory first. Set `WORKER_ADDRESS` to override the
+address the router connects to (the default is the local source address used to
+reach the server). It must be unique per worker and reachable from the server.
+
+App state lives in `$SERVICE_STATE` and is snapshotted every 30s to
+`$STATE_DIR/services/<name>/state/` on the server. Mount it in Compose so state
+survives promotion:
+
+```yaml
+services:
+  app:
+    image: example/app
+    volumes:
+      - ${SERVICE_STATE}:/data
+```
+
+Only `$SERVICE_STATE` is replicated. The server keeps the latest snapshot, so
+writes after the last sync can be lost if the active worker fails. Leases and
+routes are stored beside it in `lease.tsv` and `routes.tsv`; the router keeps
+one `socat` listener per claimed public port. The lease API is unauthenticated
+like the rest of the HTTP surface: expose the server only on a trusted network.
 
 ## Node
 
@@ -241,8 +310,9 @@ tests/run.sh
 No root, no real WireGuard, no external network: each suite starts the C relay
 on loopback with temporary state. Coverage includes fictive ids, static and
 personal trees, site sync, device registry, invites, `/signin` + `/door`,
-journal layout and git, peer synchronization, firewall idempotence, and the
-server-rendered node artifact. See `tests/README.md`.
+journal layout and git, peer synchronization, firewall idempotence, service
+leases and TCP route promotion, and the server-rendered node artifact. See
+`tests/README.md`.
 
 ## Files
 
@@ -252,10 +322,14 @@ server-rendered node artifact. See `tests/README.md`.
 - `site/deploy/sync_site.sh` — atomic published-tree swap
 - `site/deploy/remote_install.sh` — user phase, systemd or `setsid`
 - `site/deploy/beaut.service` — systemd user unit
+- `site/deploy/beaut-router.service` — systemd user unit for TCP routing
 - `site/scripts/http_server.sh` / `.c` — listener chain
 - `site/scripts/http_handler.sh` — routes and served trees
 - `site/scripts/lib/http.sh` — responses, parsing, forms, client
 - `site/scripts/lib/state.sh` — TSV helpers
+- `site/scripts/lib/services.sh` — leases, routes and router listeners
+- `site/scripts/tcp_router.sh` — forward public ports to lease owners
+- `site/scripts/service_worker.sh` — claim, compose, heartbeat, state sync
 - `site/scripts/node.sh` — POSIX node script
 - `site/scripts/build_published_node.sh` — renders `/node`
 - `site/scripts/network.sh`, `lib/wireguard.sh` — WireGuard, firewall, peers

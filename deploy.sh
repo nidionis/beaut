@@ -225,7 +225,7 @@ wait_for_server() {
 }
 
 install_server() {
-  local required_command
+  local required_command router_state
   for required_command in ssh scp curl tar; do
     has_command "$required_command" || die "$required_command is required"
   done
@@ -260,6 +260,12 @@ install_server() {
 
   remote_run "$FILES_DIR/remote_install.sh"
   wait_for_server || exit 1
+  router_state="$(as_service_user \
+    'systemctl --user is-active beaut-router.service 2>/dev/null || true' \
+    2>/dev/null || true)"
+  if [[ "$router_state" != "active" ]]; then
+    log warn "tcp router is not active (install socat; see ~/.beaut/state/router.log)"
+  fi
   log info "server active: http://$SERVER_HOST:$HTTP_PORT"
   log info "node: curl -fsS http://$SERVER_HOST:$HTTP_PORT/node | sh"
   log info "installation complete on $SERVER_HOST (user $SERVICE_USER)"

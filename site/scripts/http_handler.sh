@@ -26,6 +26,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib/http.sh"
 . "$SCRIPT_DIR/lib/devices.sh"
 . "$SCRIPT_DIR/lib/invites.sh"
+. "$SCRIPT_DIR/lib/services.sh"
 load_config
 
 STATE_DB="$STATE_DIR/db.tsv"
@@ -232,6 +233,72 @@ serve_door() {
     "$(state_field "$row" 4)")"
 }
 
+# --- service leases ---------------------------------------------------------
+service_http_route() {
+  local path="${1#service/}" name action worker status body
+  local beaut_url service_ssh service_ssh_port
+  name="${path%%/*}"
+  action="${path#*/}"
+  if [[ -z "$path" || "$name" == "$path" || -z "$action" ]]; then
+    http_send_response 400 "missing service action"
+    return
+  fi
+  if ! service_validate_name "$name"; then
+    not_found
+    return
+  fi
+  case "$action" in
+    claim|heartbeat|release)
+      if [[ "${http_method^^}" != "POST" ]]; then
+        http_send_response 400 "POST required"
+        return
+      fi
+      worker="$(http_get_form_param worker || true)"
+      if ! service_worker_valid "$worker"; then
+        http_send_response 400 "invalid worker"
+        return
+      fi
+      ;;
+  esac
+  case "$action" in
+    claim)
+      service_claim "$name" "$worker"
+      status=$?
+      case "$status" in
+        0) http_send_response 200 "claimed: $name" ;;
+        2) http_send_response 404 "no ports: $name" ;;
+        3) http_send_response 409 "busy: $name" ;;
+        *) http_send_response 400 "cannot claim: $name" ;;
+      esac
+      ;;
+    heartbeat)
+      if service_heartbeat "$name" "$worker"; then
+        http_send_response 200 "alive: $name"
+      else
+        http_send_response 409 "lost: $name"
+      fi
+      ;;
+    release)
+      service_release "$name" "$worker" || true
+      http_send_response 200 "released: $name"
+      ;;
+    status)
+      body="$(service_status "$name")" || { not_found; return; }
+      http_send_response 200 "$body"
+      ;;
+    run)
+      [[ -f "$(service_manifest_directory "$name")/ports" ]] || { not_found; return; }
+      beaut_url="http://$SERVER_HOST:$HTTP_PORT"
+      service_ssh="${SERVICE_USER}@${SERVER_HOST}"
+      service_ssh_port="${SERVICE_SSH_PORT:-}"
+      body="#!/bin/sh
+curl -fsS '$beaut_url/scripts/service_worker.sh' | env BEAUT_URL='$beaut_url' SERVICE_SSH='$service_ssh' SERVICE_SSH_PORT='$service_ssh_port' bash -s -- '$name'"
+      http_send_response 200 "$body"
+      ;;
+    *) not_found ;;
+  esac
+}
+
 # --- routing ----------------------------------------------------------------
 http_parse_request
 [[ -n "${http_method:-}" ]] || exit 0
@@ -293,6 +360,9 @@ case "$url_path" in
     ;;
   door)
     serve_door
+    ;;
+  service/*)
+    service_http_route "$url_path"
     ;;
   *)
     serve_tree "$url_path"

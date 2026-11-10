@@ -1,0 +1,13 @@
+[Unit]
+Description=beaut — raw TCP service router
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.beaut
+ExecStart=%h/.beaut/site/scripts/tcp_router.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

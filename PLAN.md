@@ -13,6 +13,11 @@ and every surface stays replaceable: no backcompat aliases, no hidden modes.
   `http_handler.sh`. Fictive work ids, `/work/<id>` returning
   `$SVR_ROOT/command`, `/done/<id>` archiving and returning results, static
   trees limited to `PUBLISHED_ROOT` and `SVR_ROOT`.
+- **Services** — `SVR_ROOT/service/<name>/ports` maps public TCP ports to worker
+  ports. A lease in `STATE_DIR/services/<name>/` selects one worker; a standby
+  claims the expired lease, and `tcp_router.sh` repoints `socat` listeners.
+  Workers run `docker compose`, heartbeat, and rsync `$SERVICE_STATE`
+  snapshots through the server.
 - **Personal tree** — `SVR_ROOT` (`~/.svr`) is a separate git repository.
   `$PUBLISHED_ROOT/$SVR_NAME` is a symlink to it; `SVR_NAME` is generated once
   and persisted. `scripts/` is linked inside the tree while `/scripts/` stays
@@ -42,9 +47,11 @@ and every surface stays replaceable: no backcompat aliases, no hidden modes.
 2. **Fabric** — identity (keys, invites), network (WireGuard), policy (trust
    and access), scheduler (work ids -> leases -> results), gateway (HTTP).
    Each part is a library with a thin CLI.
-3. **Services** — git-backed, containerized units. A service is a repository
-   plus a manifest; deploy pulls it and lets the init system run it. The HTTP
-   handler stays a static file server and control API; it never executes work.
+3. **Services** — a ports manifest plus a Compose file in the personal tree.
+   The server only leases ports and routes TCP; workers run compose and
+   replicate `$SERVICE_STATE` through the server. The HTTP handler stays a
+   static file server and control API; it never executes work. Next: health
+   status in the lease response and a small service CLI.
 4. **State** — TSV until volume demands more. Archives and git remotes provide
    durability; worker-memory RAID is deferred.
 5. **Edge** — connection statistics derived from firewall state, pruning of
@@ -59,9 +66,10 @@ and every surface stays replaceable: no backcompat aliases, no hidden modes.
   keys and journal command on a fresh OS.
 - **Scheduler**: promote fictive ids into a real queue with leases, retries and
   result validation. Keep the node protocol (`/work`, `/done`, `/get`) stable.
-- **Container services**: a git-backed service catalog with per-service
-  manifests, deployed by the service user; no long-running logic in the
-  handler.
+  Service leases are the first slice.
+- **Container services**: the minimal slice is live (ports manifest, lease,
+  compose on the worker, TCP router, state snapshots). Next: health status and
+  service inspection over HTTP.
 - **Edge pruning**: derive peer liveness from firewall counters and WireGuard
   handshakes; expire inactive devices.
 - **Worker memory RAID**: deferred until the service layer exists.
