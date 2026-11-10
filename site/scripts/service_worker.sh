@@ -34,14 +34,18 @@ fi
 
 log() { printf '[service:%s] %s\n' "$name" "$*" >&2; }
 has() { command -v "$1" >/dev/null 2>&1; }
+require() { has "$1" || { log "$1 is required"; exit 1; }; }
 ssh_remote() { ssh "${SSH_OPTIONS[@]}" "$SERVICE_SSH" "$@"; }
+
+beaut_host() {
+  local host="${BEAUT_URL#*://}"
+  host="${host%%/*}"
+  printf '%s' "${host%%:*}"
+}
 
 [[ -n "$BEAUT_URL" ]] || { log "set BEAUT_URL to the server URL"; exit 1; }
 if [[ -z "$SERVICE_SSH" ]]; then
-  server_host="${BEAUT_URL#*://}"
-  server_host="${server_host%%/*}"
-  server_host="${server_host%%:*}"
-  SERVICE_SSH="${SERVICE_USER:-beaut}@$server_host"
+  SERVICE_SSH="${SERVICE_USER:-beaut}@$(beaut_host)"
 fi
 if [[ -z "${SVR_REMOTE:-}" ]]; then
   if [[ -n "$SERVICE_SSH_PORT" ]]; then
@@ -99,28 +103,33 @@ compose_select() {
   fi
 }
 
-compose_up() {
-  SERVICE_STATE="$SERVICE_STATE_LOCAL" COMPOSE_PROJECT_NAME="$project_name" \
-    "${COMPOSE[@]}" -f "$compose" up -d
+load_compose() {
+  compose="$(compose_file)" || { log "no compose file for $name"; return 1; }
+  compose_select
 }
 
-compose_down() {
+compose_run() {
   SERVICE_STATE="$SERVICE_STATE_LOCAL" COMPOSE_PROJECT_NAME="$project_name" \
-    "${COMPOSE[@]}" -f "$compose" down --remove-orphans
+    "${COMPOSE[@]}" -f "$compose" "$@"
+}
+
+compose_up() { compose_run up -d; }
+compose_down() { compose_run down --remove-orphans; }
+
+state_rsync() {
+  rsync -az --delete -e "$RSYNC_SHELL" "$@"
 }
 
 restore_state() {
   mkdir -p -- "$SERVICE_STATE_LOCAL" || return 1
   ssh_remote "mkdir -p '$SERVICE_REMOTE_STATE'" >/dev/null 2>&1 \
     || { log "cannot reach server state"; return 1; }
-  rsync -az --delete -e "$RSYNC_SHELL" \
-    "$SERVICE_SSH:$SERVICE_REMOTE_STATE/" "$SERVICE_STATE_LOCAL/" \
+  state_rsync "$SERVICE_SSH:$SERVICE_REMOTE_STATE/" "$SERVICE_STATE_LOCAL/" \
     || { log "state restore failed"; return 1; }
 }
 
 sync_state() {
-  rsync -az --delete -e "$RSYNC_SHELL" \
-    "$SERVICE_STATE_LOCAL/" "$SERVICE_SSH:$SERVICE_REMOTE_STATE/"
+  state_rsync "$SERVICE_STATE_LOCAL/" "$SERVICE_SSH:$SERVICE_REMOTE_STATE/"
 }
 
 cleanup() {
@@ -139,14 +148,29 @@ trap 'exit 0' INT TERM
 trap cleanup EXIT
 
 worker_address() {
-  local server_host
-  server_host="${BEAUT_URL#*://}"
-  server_host="${server_host%%/*}"
-  server_host="${server_host%%:*}"
+  local host
+  host="$(beaut_host)"
   if has ip; then
-    ip -4 route get "$server_host" 2>/dev/null \
+    ip -4 route get "$host" 2>/dev/null \
       | awk '{ for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit } }'
   fi
+}
+
+claim_lease() {
+  while :; do
+    if ! http_post "/service/$name/claim" "worker=$WORKER_ADDRESS"; then
+      log "server unreachable; retrying"
+      sleep "$SERVICE_RETRY_SECONDS"
+      continue
+    fi
+    case "$HTTP_STATUS" in
+      200) claimed=1; log "lease acquired"; return 0 ;;
+      409) log "standby: lease held"; sleep "$SERVICE_RETRY_SECONDS" ;;
+      404) log "no ports manifest on the server"; return 1 ;;
+      400) log "claim rejected: $HTTP_BODY"; return 1 ;;
+      *) log "claim failed: $HTTP_STATUS $HTTP_BODY"; sleep "$SERVICE_RETRY_SECONDS" ;;
+    esac
+  done
 }
 
 if [[ -z "$WORKER_ADDRESS" ]]; then
@@ -157,31 +181,17 @@ if [[ -z "$WORKER_ADDRESS" ]]; then
 fi
 [[ -n "$WORKER_ADDRESS" ]] || { log "set WORKER_ADDRESS"; exit 1; }
 
-has curl || { log "curl is required"; exit 1; }
-has rsync || { log "rsync is required"; exit 1; }
+require curl
+require rsync
 sync_repo || exit 1
-compose="$(compose_file)" || { log "no compose file for $name"; exit 1; }
-compose_select || exit 1
+load_compose || exit 1
 project_name="beaut-${name,,}"
 project_name="${project_name//[^a-z0-9_-]/_}"
 
-while :; do
-  if ! http_post "/service/$name/claim" "worker=$WORKER_ADDRESS"; then
-    log "server unreachable; retrying"
-    sleep "$SERVICE_RETRY_SECONDS"
-    continue
-  fi
-  case "$HTTP_STATUS" in
-    200) claimed=1; log "lease acquired"; break ;;
-    409) log "standby: lease held"; sleep "$SERVICE_RETRY_SECONDS" ;;
-    404) log "no ports manifest on the server"; exit 1 ;;
-    400) log "claim rejected: $HTTP_BODY"; exit 1 ;;
-    *) log "claim failed: $HTTP_STATUS $HTTP_BODY"; sleep "$SERVICE_RETRY_SECONDS" ;;
-  esac
-done
+claim_lease || exit 1
 
 sync_repo || { log "cannot refresh the service checkout"; exit 1; }
-compose="$(compose_file)" || { log "no compose file for $name"; exit 1; }
+load_compose || exit 1
 restore_state || exit 1
 if ! compose_up; then
   log "compose up failed"

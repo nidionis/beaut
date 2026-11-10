@@ -22,6 +22,19 @@ printf '19001 18080\n19002 18081\n' > "$SVR_ROOT/service/app/ports"
 . "$PROJECT_ROOT/site/scripts/lib/core.sh"
 . "$PROJECT_ROOT/site/scripts/lib/services.sh"
 
+# --- helpers -----------------------------------------------------------------
+printf '# comment\n19001 18080\nbad 18081\n19002 70000\n19003 18082 extra\n' > "$sandbox/ports"
+assert_equal "$(printf '19001\t18080\n19003\t18082')" "$(service_read_ports "$sandbox/ports")" \
+  "ports reader keeps validated rows"
+assert_equal "$SERVICE_DIRECTORY/app/lease.tsv" "$(service_file app lease.tsv)" \
+  "state file helper joins the service directory"
+run_command="$(SERVER_HOST=server.test HTTP_PORT=9090 SERVICE_USER=beaut \
+  SERVICE_SSH_PORT=2222 service_run_command app)"
+assert_contains "$run_command" "BEAUT_URL='http://server.test:9090'" \
+  "run command bakes the server URL"
+assert_contains "$run_command" "SERVICE_SSH='beaut@server.test' SERVICE_SSH_PORT='2222'" \
+  "run command bakes the SSH target"
+
 # --- leases ------------------------------------------------------------------
 assert_success "valid service port" service_port_valid 8080
 assert_failure "port zero is invalid" service_port_valid 0
@@ -31,6 +44,8 @@ assert_success "first claim wins" service_claim app worker1
 assert_file_exists "$STATE_DIR/services/app/lease.tsv" "lease file"
 assert_file_exists "$STATE_DIR/services/app/routes.tsv" "route file"
 assert_contains "$(service_status app)" 'worker=worker1' "status shows owner"
+assert_contains "$(service_active_routes)" "$(printf '19001\tworker1:18080')" \
+  "active routes expose the current owner"
 
 assert_failure "second claim is refused while the lease is live" service_claim app worker2
 assert_success "owner heartbeat renews" service_heartbeat app worker1

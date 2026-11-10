@@ -7,6 +7,8 @@
 # State (server): $SERVICE_DIRECTORY/<name>/
 #   lease.tsv    worker <TAB> expires
 #   routes.tsv   public <TAB> app
+# Router state: $SERVICE_DIRECTORY/router/
+#   <public>.pid, <public>.target, router.log
 set -uo pipefail
 
 SERVICES_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,6 +34,10 @@ service_directory() {
 
 service_manifest_directory() {
   printf '%s/service/%s' "${SVR_ROOT:-${HOME:?HOME is required}/.svr}" "${1:?missing service}"
+}
+
+service_file() {
+  printf '%s/%s' "$(service_directory "$1")" "${2:?missing state file}"
 }
 
 service_lock() {
@@ -74,35 +80,46 @@ service_write_atomic() {
   mv -f -- "$temporary" "$file"
 }
 
-service_ports() {
-  local name="$1" file public app ignored
-  file="$(service_manifest_directory "$name")/ports"
+# Print validated "<first> <TAB> <second>" rows from a two-column file.
+service_read_ports() {
+  local file="${1:?missing ports file}" first second ignored
   [[ -f "$file" ]] || return 1
-  while read -r public app ignored; do
-    [[ "$public" == '#'* ]] && continue
-    service_port_valid "$public" && service_port_valid "$app" || continue
-    printf '%s\t%s\n' "$public" "$app"
+  while read -r first second ignored; do
+    [[ "$first" == '#'* ]] && continue
+    service_port_valid "$first" && service_port_valid "$second" || continue
+    printf '%s\t%s\n' "$first" "$second"
   done < "$file"
+}
+
+service_ports() {
+  service_read_ports "$(service_manifest_directory "$1")/ports"
 }
 
 service_lease_read() {
   local name="$1" file owner expires
-  file="$(service_directory "$name")/lease.tsv"
+  file="$(service_file "$name" lease.tsv)"
   [[ -f "$file" ]] || return 1
   IFS=$'\t' read -r owner expires < "$file" || return 1
   [[ -n "$owner" && "$expires" =~ ^[0-9]+$ ]] || return 1
   printf '%s\t%s' "$owner" "$expires"
 }
 
+service_lease_write() {
+  local name="$1" worker="$2" now ttl
+  now="$(date +%s)"
+  ttl="$(service_ttl)"
+  service_write_atomic "$(service_file "$name" lease.tsv)" \
+    "$(printf '%s\t%s' "$worker" "$((now + ttl))")"
+}
+
 service_claim() {
-  local name="$1" worker="$2" directory routes lease owner expires now ttl lease_row routes_body
+  local name="$1" worker="$2" directory routes lease owner expires now
   service_validate_name "$name" && service_worker_valid "$worker" || return 1
   routes="$(service_ports "$name")" || return 2
   [[ -n "$routes" ]] || return 2
   directory="$(service_directory "$name")"
   service_lock "$directory" || return 1
   now="$(date +%s)"
-  ttl="$(service_ttl)"
   if lease="$(service_lease_read "$name")"; then
     IFS=$'\t' read -r owner expires <<< "$lease"
     if (( expires > now )) && [[ "$owner" != "$worker" ]]; then
@@ -110,10 +127,8 @@ service_claim() {
       return 3
     fi
   fi
-  lease_row="$(printf '%s\t%s\n' "$worker" "$((now + ttl))")"
-  routes_body="$(printf '%s\n' "$routes")"
-  if ! service_write_atomic "$directory/lease.tsv" "$lease_row" \
-     || ! service_write_atomic "$directory/routes.tsv" "$routes_body"; then
+  if ! service_lease_write "$name" "$worker" \
+     || ! service_write_atomic "$directory/routes.tsv" "$routes"; then
     service_unlock
     return 1
   fi
@@ -121,7 +136,7 @@ service_claim() {
 }
 
 service_heartbeat() {
-  local name="$1" worker="$2" directory lease owner expires now ttl lease_row
+  local name="$1" worker="$2" directory lease owner
   service_validate_name "$name" && service_worker_valid "$worker" || return 1
   directory="$(service_directory "$name")"
   service_lock "$directory" || return 1
@@ -129,12 +144,9 @@ service_heartbeat() {
     service_unlock
     return 3
   fi
-  IFS=$'\t' read -r owner expires <<< "$lease"
+  IFS=$'\t' read -r owner _ <<< "$lease"
   [[ "$owner" == "$worker" ]] || { service_unlock; return 3; }
-  now="$(date +%s)"
-  ttl="$(service_ttl)"
-  lease_row="$(printf '%s\t%s\n' "$worker" "$((now + ttl))")"
-  if ! service_write_atomic "$directory/lease.tsv" "$lease_row"; then
+  if ! service_lease_write "$name" "$worker"; then
     service_unlock
     return 1
   fi
@@ -142,12 +154,12 @@ service_heartbeat() {
 }
 
 service_release() {
-  local name="$1" worker="$2" directory lease owner expires
+  local name="$1" worker="$2" directory lease owner
   service_validate_name "$name" && service_worker_valid "$worker" || return 1
   directory="$(service_directory "$name")"
   service_lock "$directory" || return 1
   if lease="$(service_lease_read "$name")"; then
-    IFS=$'\t' read -r owner expires <<< "$lease"
+    IFS=$'\t' read -r owner _ <<< "$lease"
     [[ "$owner" == "$worker" ]] && rm -f -- "$directory/lease.tsv" "$directory/routes.tsv"
   fi
   service_unlock
@@ -166,70 +178,90 @@ service_status() {
   done < "$directory/routes.tsv"
 }
 
+# Shell command served by GET /service/<name>/run.
+service_run_command() {
+  local name="$1" url
+  url="http://${SERVER_HOST:?SERVER_HOST is required}:${HTTP_PORT:?HTTP_PORT is required}"
+  printf "#!/bin/sh\ncurl -fsS '%s/scripts/service_worker.sh' | env BEAUT_URL='%s' SERVICE_SSH='%s@%s' SERVICE_SSH_PORT='%s' bash -s -- '%s'" \
+    "$url" "$url" "${SERVICE_USER:-beaut}" "$SERVER_HOST" "${SERVICE_SSH_PORT:-}" "$name"
+}
+
+# Print active "<public> <TAB> <worker>:<app>" rows.
+service_active_routes() {
+  local root lease directory owner expires now public app
+  root="$(service_root)"
+  now="$(date +%s)"
+  for lease in "$root"/*/lease.tsv; do
+    [[ -f "$lease" ]] || continue
+    directory="${lease%/*}"
+    IFS=$'\t' read -r owner expires < "$lease" || continue
+    [[ "$expires" =~ ^[0-9]+$ ]] || continue
+    (( expires > now )) || continue
+    [[ -f "$directory/routes.tsv" ]] || continue
+    while IFS=$'\t' read -r public app; do
+      printf '%s\t%s:%s\n' "$public" "$owner" "$app"
+    done < <(service_read_ports "$directory/routes.tsv")
+  done
+}
+
 service_router_pid_ok() {
   local pid="$1" public="$2"
   [[ -r "/proc/$pid/cmdline" ]] || return 1
   tr '\0' ' ' < "/proc/$pid/cmdline" | grep -q "TCP-LISTEN:$public,"
 }
 
+service_router_stop_one() {
+  local pidfile="$1" router="${1%/*}" public pid
+  public="${pidfile##*/}"; public="${public%.pid}"
+  pid="$(cat "$pidfile" 2>/dev/null || true)"
+  if [[ "$pid" =~ ^[0-9]+$ ]] && service_router_pid_ok "$pid" "$public"; then
+    kill "$pid" 2>/dev/null || true
+  fi
+  rm -f -- "$pidfile" "$router/$public.target"
+}
+
+service_router_start() {
+  local router="$1" public="$2" target="$3"
+  printf '%s\n' "$target" > "$router/$public.target"
+  socat "TCP-LISTEN:$public,fork,reuseaddr" "TCP:$target" >> "$router/router.log" 2>&1 &
+  printf '%s\n' "$!" > "$router/$public.pid"
+}
+
 service_router_stop() {
-  local root pidfile public pid
-  root="$(service_root)"
-  for pidfile in "$root"/router/*.pid; do
+  local pidfile
+  for pidfile in "$(service_root)"/router/*.pid; do
     [[ -f "$pidfile" ]] || continue
-    public="${pidfile##*/}"; public="${public%.pid}"
-    pid="$(cat "$pidfile" 2>/dev/null || true)"
-    if [[ "$pid" =~ ^[0-9]+$ ]] && service_router_pid_ok "$pid" "$public"; then
-      kill "$pid" 2>/dev/null || true
-    fi
-    rm -f -- "$pidfile" "$root/router/$public.target"
+    service_router_stop_one "$pidfile"
   done
 }
 
 service_router_sync() {
-  local root router lease directory owner expires public app target pidfile targetfile pid old_target
+  local router pidfile public target pid old_target
   local -A wanted=()
-  root="$(service_root)"
-  router="$root/router"
+  router="$(service_root)/router"
   mkdir -p -- "$router"
 
-  for lease in "$root"/*/lease.tsv; do
-    [[ -f "$lease" ]] || continue
-    directory="${lease%/*}"
-    IFS=$'\t' read -r owner expires < "$lease" || continue
-    [[ "$expires" =~ ^[0-9]+$ ]] || continue
-    (( expires > $(date +%s) )) || continue
-    [[ -f "$directory/routes.tsv" ]] || continue
-    while IFS=$'\t' read -r public app; do
-      service_port_valid "$public" && service_port_valid "$app" || continue
-      wanted["$public"]="$owner:$app"
-    done < "$directory/routes.tsv"
-  done
+  while IFS=$'\t' read -r public target; do
+    wanted["$public"]="$target"
+  done < <(service_active_routes)
 
-  if (( ${#wanted[@]} )); then
-    for public in "${!wanted[@]}"; do
-      target="${wanted[$public]}"
-      pidfile="$router/$public.pid"
-      targetfile="$router/$public.target"
-      pid="$(cat "$pidfile" 2>/dev/null || true)"
-      old_target="$(cat "$targetfile" 2>/dev/null || true)"
-      if [[ "$pid" =~ ^[0-9]+$ ]] && service_router_pid_ok "$pid" "$public" \
-         && [[ "$old_target" == "$target" ]]; then
-        continue
-      fi
-      [[ "$pid" =~ ^[0-9]+$ ]] && service_router_pid_ok "$pid" "$public" && kill "$pid" 2>/dev/null || true
-      printf '%s\n' "$target" > "$targetfile"
-      socat "TCP-LISTEN:$public,fork,reuseaddr" "TCP:$target" >> "$router/router.log" 2>&1 &
-      printf '%s\n' "$!" > "$pidfile"
-    done
-  fi
+  for public in "${!wanted[@]}"; do
+    target="${wanted[$public]}"
+    pidfile="$router/$public.pid"
+    pid="$(cat "$pidfile" 2>/dev/null || true)"
+    old_target="$(cat "$router/$public.target" 2>/dev/null || true)"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && service_router_pid_ok "$pid" "$public" \
+       && [[ "$old_target" == "$target" ]]; then
+      continue
+    fi
+    service_router_stop_one "$pidfile"
+    service_router_start "$router" "$public" "$target"
+  done
 
   for pidfile in "$router"/*.pid; do
     [[ -f "$pidfile" ]] || continue
     public="${pidfile##*/}"; public="${public%.pid}"
     [[ -n "${wanted[$public]:-}" ]] && continue
-    pid="$(cat "$pidfile" 2>/dev/null || true)"
-    [[ "$pid" =~ ^[0-9]+$ ]] && service_router_pid_ok "$pid" "$public" && kill "$pid" 2>/dev/null || true
-    rm -f -- "$pidfile" "$router/$public.target"
+    service_router_stop_one "$pidfile"
   done
 }

@@ -43,10 +43,12 @@ assert_contains "$deploy_text" "--exclude='.git'" "git repositories are not uplo
 assert_not_contains "$deploy_text" 'shared/' "the published tree is the site tree, not a copy"
 
 remote_install_text="$(cat "$PROJECT_ROOT/site/deploy/remote_install.sh")"
-assert_contains "$remote_install_text" 'systemctl --user restart beaut.service' \
-  "upgrades restart the running service"
-assert_contains "$remote_install_text" 'systemctl --user restart beaut-router.service' \
-  "upgrades restart the TCP router"
+assert_contains "$remote_install_text" 'systemctl --user restart "$unit"' \
+  "upgrades restart the running user service"
+assert_contains "$remote_install_text" 'start_user_service beaut.service' \
+  "the HTTP service is restarted on upgrade"
+assert_contains "$remote_install_text" 'start_user_service beaut-router.service' \
+  "the TCP router is restarted on upgrade"
 remote_run_line="$(printf '%s\n' "$deploy_text" | grep '^remote_run()')"
 assert_contains "$remote_run_line" 'ssh -T' "stdin-fed remote scripts keep stdin open"
 assert_not_contains "$remote_run_line" 'ssh -n' "stdin-fed remote scripts do not discard stdin"

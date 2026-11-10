@@ -235,8 +235,7 @@ serve_door() {
 
 # --- service leases ---------------------------------------------------------
 service_http_route() {
-  local path="${1#service/}" name action worker status body
-  local beaut_url service_ssh service_ssh_port
+  local path="${1#service/}" name action worker claim_status body
   name="${path%%/*}"
   action="${path#*/}"
   if [[ -z "$path" || "$name" == "$path" || -z "$action" ]]; then
@@ -263,8 +262,8 @@ service_http_route() {
   case "$action" in
     claim)
       service_claim "$name" "$worker"
-      status=$?
-      case "$status" in
+      claim_status=$?
+      case "$claim_status" in
         0) http_send_response 200 "claimed: $name" ;;
         2) http_send_response 404 "no ports: $name" ;;
         3) http_send_response 409 "busy: $name" ;;
@@ -288,12 +287,7 @@ service_http_route() {
       ;;
     run)
       [[ -f "$(service_manifest_directory "$name")/ports" ]] || { not_found; return; }
-      beaut_url="http://$SERVER_HOST:$HTTP_PORT"
-      service_ssh="${SERVICE_USER}@${SERVER_HOST}"
-      service_ssh_port="${SERVICE_SSH_PORT:-}"
-      body="#!/bin/sh
-curl -fsS '$beaut_url/scripts/service_worker.sh' | env BEAUT_URL='$beaut_url' SERVICE_SSH='$service_ssh' SERVICE_SSH_PORT='$service_ssh_port' bash -s -- '$name'"
-      http_send_response 200 "$body"
+      http_send_response 200 "$(service_run_command "$name")"
       ;;
     *) not_found ;;
   esac
