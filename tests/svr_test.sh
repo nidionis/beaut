@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # svr_test.sh — personal tree: SVR_NAME symlink, journal under /$SVR_NAME/,
-# scripts linking, migration and CLI installation.
+# scripts linking, git repository and CLI installation.
 set -euo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,24 +11,25 @@ PROJECT_ROOT="$(cd "$TESTS_DIR/.." && pwd)"
 sandbox="$(mktemp -d)"
 trap 'server_stop; rm -rf -- "$sandbox"' EXIT
 
+export HOME="$sandbox/home"
 export STATE_DIR="$sandbox/state"
 export PUBLISHED_ROOT="$sandbox/site"
 export SERVICE_ROOT="$sandbox/service"
 export LOG_LEVEL='error'
 export JOURNAL_GIT='0'
-mkdir -p "$STATE_DIR" "$PUBLISHED_ROOT" "$SERVICE_ROOT"
+mkdir -p "$HOME" "$STATE_DIR" "$PUBLISHED_ROOT" "$SERVICE_ROOT"
 
 . "$PROJECT_ROOT/site/scripts/lib/core.sh"
 . "$PROJECT_ROOT/site/scripts/lib/personal_tree.sh"
 . "$PROJECT_ROOT/site/scripts/lib/journal.sh"
 
 # --- random name + symlink layout -------------------------------------------
-unset SVR_NAME SVR_ROOT SVR_PATH
+unset SVR_NAME SVR_ROOT
 random_name="$(personal_tree_initialize)"
 assert_matches '^[A-Za-z0-9]{8}$' "$random_name" "random name shape"
-assert_equal "$SERVICE_ROOT/.svr" "$(personal_tree_root)" "SVR_ROOT default"
+assert_equal "$HOME/.svr" "$(personal_tree_root)" "SVR_ROOT default"
 assert_success "site name is a symlink to SVR_ROOT" test -L "$PUBLISHED_ROOT/$random_name"
-assert_equal "$(realpath -m "$SERVICE_ROOT/.svr")" "$(realpath -m "$PUBLISHED_ROOT/$random_name")" \
+assert_equal "$(realpath -m "$HOME/.svr")" "$(realpath -m "$PUBLISHED_ROOT/$random_name")" \
   "symlink target is SVR_ROOT"
 assert_equal "$random_name" "$(personal_tree_name)" "name is stable"
 assert_file_exists "$(personal_tree_root)/DEFAULT.sh" "static default script"
@@ -43,20 +44,20 @@ assert_equal 'named01' "$(personal_tree_name)" "explicit SVR_NAME"
 assert_equal "$SERVICE_ROOT/custom-svr" "$(personal_tree_root)" "explicit SVR_ROOT"
 unset SVR_NAME SVR_ROOT
 
+# --- an existing checkout is never seeded -----------------------------------
+existing_root="$sandbox/existing"
+mkdir -p "$existing_root"
+printf 'keep\n' > "$existing_root/keep.txt"
+SVR_ROOT="$existing_root" SVR_NAME='existing01' personal_tree_initialize >/dev/null
+assert_file_exists "$existing_root/keep.txt" "existing files survive"
+assert_file_missing "$existing_root/DEFAULT.sh" "existing tree is not seeded"
+assert_file_missing "$existing_root/notes" "existing tree keeps its layout"
+unset SVR_ROOT SVR_NAME
+
 # --- validation --------------------------------------------------------------
 SVR_NAME='bad/name here'
 assert_failure "SVR_NAME rejects spaces" personal_tree_name
 unset SVR_NAME
-
-# --- legacy migration: svr/ and diary/ --------------------------------------
-legacy_service="$sandbox/legacy-service"
-legacy_site="$sandbox/legacy-site"
-mkdir -p "$legacy_service" "$legacy_site" "$legacy_service/svr/diary"
-printf 'old entry\n' > "$legacy_service/svr/diary/2026-01-01.md"
-SERVICE_ROOT="$legacy_service" PUBLISHED_ROOT="$legacy_site" SVR_NAME='leg01' \
-  SVR_ROOT="$legacy_service/.svr" JOURNAL_GIT='0' personal_tree_initialize >/dev/null
-assert_file_exists "$legacy_service/.svr/journal/2026-01-01.md" \
-  "diary is migrated to journal"
 
 # --- journal under /$SVR_NAME/ ----------------------------------------------
 export SERVICE_ROOT="$sandbox/service"
@@ -68,9 +69,9 @@ export USER='tester'
 export JOURNAL_DATE='2026-01-02'
 export JOURNAL_TIME='09:30:00'
 export JOURNAL_GIT='0'
-export JOURNAL_ROOT="$SERVICE_ROOT/.svr/journal"
+export JOURNAL_ROOT="$sandbox/journal"
 mkdir -p "$PUBLISHED_ROOT"
-personal_tree_initialize >/dev/null
+personal_tree_initialize "$JOURNAL_ROOT" >/dev/null
 journal_initialize
 journal_add 'first entry' >/dev/null
 

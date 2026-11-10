@@ -68,7 +68,6 @@ assert_not_contains "$handler_text" 'http_send_redirect' "no redirect leaks the 
 svr_text="$(cat "$PROJECT_ROOT/site/scripts/svr.sh")"
 assert_contains "$svr_text" 'install)' "svr install is available"
 assert_contains "$svr_text" 'journal-perso' "the personal journal command is wired"
-assert_contains "$svr_text" 'journal_remote_set' "git remotes are configurable"
 assert_contains "$svr_text" 'personal_tree_link_site' "the hidden tree is mirrored in the site tree"
 
 # --- configuration order ----------------------------------------------------
@@ -79,25 +78,24 @@ assert_true_order="$(printf '%s\n' "$override_line $schema_line" | awk '{print (
 assert_equal 'yes' "$assert_true_order" "root overrides are written before the schema"
 
 bootstrap_text="$(cat "$PROJECT_ROOT/site/deploy/bootstrap.sh")"
-bootstrap_override_line="$(printf '%s\n' "$bootstrap_text" | grep -n 'SERVICE_ROOT=%s' | cut -d: -f1)"
-bootstrap_schema_line="$(printf '%s\n' "$bootstrap_text" | grep -n 'config.env.example" >>' | cut -d: -f1)"
-bootstrap_order="$(printf '%s\n' "$bootstrap_override_line $bootstrap_schema_line" | awk '{print ($1<$2)?"yes":"no"}')"
-assert_equal 'yes' "$bootstrap_order" "bootstrap overrides are written before the schema"
+assert_contains "$bootstrap_text" 'install_privileged.sh' \
+  "bootstrap uses the shared privileged installer"
 
 # --- privileged refresh actually runs --------------------------------------
+payload_directory="$sandbox/payload"
 service_home="$sandbox/service"
 root_library="$sandbox/root-library"
-mkdir -p "$service_home/.beaut/site/scripts/lib" "$service_home/.beaut/state"
-printf '#!/bin/sh\nprintf refreshed\\n\n' > "$service_home/.beaut/site/scripts/refresh.sh"
-printf '#!/bin/sh\n' > "$service_home/.beaut/site/scripts/lib/helper.sh"
-cat > "$service_home/.beaut/config.env.example" <<'SCHEMA'
+mkdir -p "$payload_directory/site/scripts/lib" "$service_home/.beaut/state"
+printf '#!/bin/sh\nprintf refreshed\\n\n' > "$payload_directory/site/scripts/refresh.sh"
+printf '#!/bin/sh\n' > "$payload_directory/site/scripts/lib/helper.sh"
+cat > "$payload_directory/config.env.example" <<'SCHEMA'
 SERVICE_USER=${SERVICE_USER:-beaut}
 STATE_DIR=${STATE_DIR:-$HOME/.beaut/state}
-SVR_DIR=${SVR_DIR:-}
-SVR_ROOT=${SVR_ROOT:-}
+JOURNAL_REMOTE_PATH=${JOURNAL_REMOTE_PATH:-}
 SCHEMA
 
-SERVICE_HOME="$service_home" ROOT_LIBRARY_DIRECTORY="$root_library" \
+SOURCE_DIRECTORY="$payload_directory" SERVICE_ROOT="$service_home/.beaut" \
+  ROOT_LIBRARY_DIRECTORY="$root_library" \
   bash "$PROJECT_ROOT/site/deploy/install_privileged.sh" >/dev/null 2>&1
 assert_file_exists "$root_library/site/scripts/refresh.sh" "privileged script copy"
 assert_file_exists "$root_library/site/scripts/lib/helper.sh" "privileged library copy"
@@ -109,5 +107,6 @@ assert_contains "$root_config" "STATE_DIR=$service_home/.beaut/state" "root conf
 assert_contains "$root_config" "PUBLISHED_ROOT=$service_home/.beaut/site" "root config published root"
 assert_equal 'SERVICE_ROOT='"$service_home"'/.beaut' "$(printf '%s\n' "$root_config" | head -1)" \
   "root config starts with the path override"
-assert_contains "$root_config" 'SVR_DIR=${SVR_DIR:-}' "schema is appended after overrides"
+assert_contains "$root_config" 'JOURNAL_REMOTE_PATH=${JOURNAL_REMOTE_PATH:-}' \
+  "schema is appended after overrides"
 

@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
-# lib/state.sh — single TSV table (state/db.tsv) and small TSV helpers.
-# Columns: type | id | value1 | value2 | value3 | value4 | value5 | timestamp
-#   type=token   : token | command | status | created_at | worker_ip | result | confirmed_at
-#   type=task    : task | dataset | command | status | created_at | ... | ...
-#   type=result  : token | node | result | timestamp | ... | ...
-#   type=archive : day | token | node | result | timestamp | ... | ...
+# lib/state.sh — TSV helpers. state/db.tsv stores archived results:
+#   type=archive | day | id | node | result | timestamp
 state_find() {
   local file="${1:?missing file}" column="${2:?missing column}" value="${3:?missing value}"
   [[ -f "$file" ]] || return 1

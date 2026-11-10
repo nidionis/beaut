@@ -12,7 +12,6 @@ trap 'rm -rf -- "$sandbox"' EXIT
 
 export STATE_DIR="$sandbox/state"
 export SERVICE_ROOT="$sandbox/service"
-export SVR_DIR='sheethome'
 export LOG_LEVEL='error'
 export JOURNAL_ROOT="$SERVICE_ROOT/sheethome/journal"
 export PERSO_ROOT="$SERVICE_ROOT/sheethome/perso"
@@ -24,7 +23,6 @@ export USER='tester'
 mkdir -p "$STATE_DIR"
 
 . "$PROJECT_ROOT/site/scripts/lib/core.sh"
-. "$PROJECT_ROOT/site/scripts/lib/personal_tree.sh"
 . "$PROJECT_ROOT/site/scripts/lib/journal.sh"
 
 journal_initialize
@@ -101,12 +99,17 @@ if command -v git >/dev/null 2>&1; then
   assert_equal "$new_origin" \
     "$(git -C "$git_journal" remote get-url origin)" "remote can be replaced"
 
-  # "hidden" points at the server's hidden journal path.
+  # "server" points at an exact path on the journal server.
   resolved="$(JOURNAL_REMOTE_HOST='srv.example' JOURNAL_REMOTE_USER='beaut' \
-    JOURNAL_REMOTE_ROOT="$sandbox/service/sheethome" \
-    journal_remote_resolve hidden "$git_journal")"
-  assert_equal "beaut@srv.example:$sandbox/service/sheethome/git-journal" \
-    "$resolved" "hidden remote resolves to the server path"
+    JOURNAL_REMOTE_PATH="$sandbox/server/journal" \
+    journal_remote_resolve server "$git_journal")"
+  assert_equal "beaut@srv.example:$sandbox/server/journal" \
+    "$resolved" "server remote resolves to the configured path"
+  assert_equal "ssh://beaut@srv.example:2222/srv/journal" \
+    "$(JOURNAL_REMOTE_HOST='srv.example' JOURNAL_REMOTE_USER='beaut' \
+      JOURNAL_REMOTE_PATH='/srv/journal' JOURNAL_SSH_PORT=2222 \
+      journal_remote_resolve server "$git_journal")" \
+    "server remote honours a softcoded SSH port"
   assert_equal 'git@example:repo.git' \
     "$(journal_remote_resolve 'git@example:repo.git' "$git_journal")" \
     "plain remote passes through"

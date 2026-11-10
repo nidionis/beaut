@@ -21,7 +21,7 @@ printf '# notes\n' > "$published_root/assets/note.md"
 printf 'host={{SERVER_HOST}} port={{HTTP_PORT}}\n' > "$published_root/assets/info.html"
 printf 'raw {{SERVER_HOST}}\n' > "$published_root/assets/raw.txt"
 printf '#!/bin/sh\necho fixture-legacy\n' > "$published_root/legacy/DEFAULT.sh"
-printf 'secret-token\n' > "$published_root/repo/.git/config"
+printf 'private-secret\n' > "$published_root/repo/.git/config"
 printf 'id\tvalue\n1\tone\n' > "$published_root/data/table.tsv"
 printf 'alpha\n' > "$published_root/tree/alpha.txt"
 printf 'private\n' > "$published_root/tree/.secret"
@@ -38,16 +38,16 @@ server_start "$published_root" "$state_directory"
 # --- work / done (fictif id) -----------------------------------------------
 http_get /work
 assert_status 200 "$HTTP_STATUS" "GET /work returns an id"
-token="$HTTP_BODY"
-assert_not_equal '' "$token" "id is not empty"
+work_id="$HTTP_BODY"
+assert_not_equal '' "$work_id" "id is not empty"
 
-http_get "/work/$token"
+http_get "/work/$work_id"
 assert_status 200 "$HTTP_STATUS" "GET /work/<id> returns the command"
 assert_equal 'echo from-svr-command' "$HTTP_BODY" "command from SVR_ROOT/command"
 
-http_post "/done/$token" 'output=hello-world'
+http_post "/done/$work_id" 'output=hello-world'
 assert_status 200 "$HTTP_STATUS" "POST /done/<id> confirms"
-assert_contains "$HTTP_BODY" "confirmed: $token" "confirmation body"
+assert_contains "$HTTP_BODY" "confirmed: $work_id" "confirmation body"
 
 # --- /get -------------------------------------------------------------------
 http_post /get "dataset=sample"
@@ -109,7 +109,7 @@ assert_not_contains "$HTTP_BODY" '.secret' "listing hides dotfiles"
 
 http_get /repo/.git/config
 assert_status 404 "$HTTP_STATUS" "dot-prefixed segment should be private"
-assert_not_contains "$HTTP_BODY" 'secret-token' "git config must not leak"
+assert_not_contains "$HTTP_BODY" 'private-secret' "git config must not leak"
 
 http_get /.git/config
 assert_status 404 "$HTTP_STATUS" "root dot-prefixed segment should be private"

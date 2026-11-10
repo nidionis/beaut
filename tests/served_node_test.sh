@@ -39,7 +39,7 @@ fi
 empty_directory="$sandbox/empty-cwd"
 mkdir -p "$empty_directory"
 node_output="$(cd "$empty_directory" && curl -fsS "$SERVER_URL/node" | sh 2>&1)"
-assert_contains "$node_output" 'token received:' "node claims a token"
+assert_contains "$node_output" 'id received:' "node claims an id"
 assert_contains "$node_output" 'command: echo hello-world' "node fetches the command"
 assert_contains "$node_output" 'result sent to /done/' "node reports the result"
 assert_contains "$node_output" '(exit: 0)' "command succeeded"

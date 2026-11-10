@@ -32,7 +32,7 @@ because some systems mount `/tmp` `noexec`.
 | `handler_test.sh` | work/done/get, static tree, index.html, MIME, hidden paths, 404, traversal |
 | `served_node_test.sh` | `curl /node \| sh` from an empty directory, `/join` unpublished |
 | `site_test.sh` | complete `site/` replacement, reserved names, git clone/pull |
-| `svr_test.sh` | hidden directory and URL path modes, journal under the secret prefix, migration, CLI install |
+| `svr_test.sh` | `SVR_NAME` symlink, journal under the prefix, scripts link, CLI install |
 | `device_test.sh` | device registry, key reuse, addresses, approval, door, CLI |
 | `invite_test.sh` | hashed passMessage, uses, expiry, revocation |
 | `signin_test.sh` | `/signin`, invite auto-accept, `/signin/<id>`, `/door`, URL decoding |

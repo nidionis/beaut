@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# svr.sh — personal tree (SVR_NAME symlink), git-backed journal and installer.
+# svr.sh — personal tree lifecycle and journal command installer.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,13 +11,11 @@ load_config
 usage() {
   cat >&2 <<'EOF'
 usage: svr.sh <command>
-  init                    create SVR_ROOT and $SVR_NAME symlink
-  link                    (re)create symlinks
+  init                    create SVR_ROOT and the $SVR_NAME symlink
+  link                    (re)create the published symlinks
   install [bin_dir]       install journal and journal-perso in the user PATH
   path                    print the URL path (/$SVR_NAME)
-  status                  print name, root and remotes
-  journal ...             journal command (independent, defaults to ~/journal)
-  journal-perso ...       personal journal command
+  status                  print name, path and root
 EOF
   exit 2
 }
@@ -69,27 +67,11 @@ svr_install() {
   esac
 }
 
-svr_remote() {
-  local root="$1" url="${2:-}"
-  if [[ -n "$url" ]]; then
-    url="$(journal_remote_resolve "$url" "$root")" || return 1
-    journal_remote_set "$root" "$url" || return 1
-    journal_git_push "$root"
-    printf 'remote: %s\n' "$url"
-  else
-    journal_remote_get "$root" || { printf 'no remote for %s\n' "$root" >&2; return 1; }
-  fi
-}
-
 svr_status() {
-  local name root remote
+  local name root
   name="$(personal_tree_name)" || return 1
   root="$(personal_tree_root)" || return 1
-  printf 'name: %s\npath: %s\nroot: %s\n' \
-    "$name" "$(personal_tree_url_path)" "$root"
-  remote="$(journal_remote_get "$root" 2>/dev/null || true)"
-  [[ -n "$remote" ]] && printf 'remote: %s\n' "$remote"
-  return 0
+  printf 'name: %s\npath: %s\nroot: %s\n' "$name" "$(personal_tree_url_path)" "$root"
 }
 
 command="${1:-}"
@@ -98,40 +80,12 @@ shift
 
 case "$command" in
   init)
-    path="$(personal_tree_initialize)" || exit 1
-    personal_tree_link_site || exit 1
-    if [[ "${JOURNAL_GIT:-1}" == "1" ]] && has_command git; then
-      journal_git_run "$(personal_tree_root)" add -A >/dev/null 2>&1 || true
-      journal_git_run "$(personal_tree_root)" commit -m "svr: initialize $path" >/dev/null 2>&1 || true
-    fi
-    printf 'personal tree: /%s\nroot: %s\n' \
-      "$path" "$(personal_tree_root)"
+    path="$(personal_tree_initialize "$(journal_root)")" || exit 1
+    printf 'personal tree: /%s\nroot: %s\n' "$path" "$(personal_tree_root)"
     ;;
-  link) personal_tree_link_site || exit 1 ;;
+  link) personal_tree_link_site "$(journal_root)" || exit 1 ;;
   install) svr_install "${1:-}" || exit 1 ;;
   path) personal_tree_url_path || exit 1; printf '\n' ;;
   status) svr_status || exit 1 ;;
-  sync) journal_sync "$(personal_tree_root)" ;;
-  remote) svr_remote "$(personal_tree_root)" "${1:-}" || exit 1 ;;
-  journal)
-    action="${1:-}"
-    case "$action" in
-      add) shift; journal_add "$*"; printf '\n' ;;
-      list) shift; journal_list "${1:-0}" ;;
-      show) shift; journal_show "$@" ;;
-      sync) journal_sync "$(journal_root)" ;;
-      remote) shift; svr_remote "$(journal_root)" "${1:-}" || exit 1 ;;
-      *) journal_open "$@"; printf '\n' ;;
-    esac
-    ;;
-  journal-perso)
-    action="${1:-}"
-    case "$action" in
-      list) shift; journal_list "${1:-0}" "$(journal_perso_root)" ;;
-      show) shift; JOURNAL_ROOT="$(journal_perso_root)" journal_show "$@" ;;
-      sync) journal_sync "$(journal_root)" ;;
-      *) journal_perso_open "$@"; printf '\n' ;;
-    esac
-    ;;
   *) usage ;;
 esac

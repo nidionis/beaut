@@ -1,11 +1,11 @@
 [Unit]
-Description=beaut — script server and token service
+Description=beaut — script server and control plane
 After=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=%h/.beaut
-ExecStart=%h/.beaut/site/deploy/start.sh
+ExecStart=%h/.beaut/site/scripts/http_server.sh
 Restart=always
 RestartSec=2
 

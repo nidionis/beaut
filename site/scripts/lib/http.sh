@@ -9,9 +9,7 @@ http_reason_phrase() {
     200) printf 'OK' ;;
     302) printf 'Found' ;;
     400) printf 'Bad Request' ;;
-    403) printf 'Forbidden' ;;
     404) printf 'Not Found' ;;
-    410) printf 'Gone' ;;
     *)   printf 'OK' ;;
   esac
 }
@@ -24,11 +22,6 @@ http_send_body() {
 
 http_send_response() {
   http_send_body "$1" 'text/plain; charset=utf-8' "${2:-}"
-}
-
-http_send_redirect() {
-  local location="$1"
-  printf 'HTTP/1.1 302 Found\r\nLocation: %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n' "$location"
 }
 
 # Pick a content type from the file extension. Scripts and unknown files stay

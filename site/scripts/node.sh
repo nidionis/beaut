@@ -30,24 +30,24 @@ http_request() {
   rm -f -- "$response_file"
 }
 
-# 1. Claim a fresh token
+# 1. Claim a fresh fictive id
 http_request GET /work
-token="$http_body"
+work_id="$http_body"
 if [ "$http_status" != "200" ]; then
-  printf 'failure: cannot claim a token (HTTP %s)\n' "$http_status" >&2
+  printf 'failure: cannot claim an id (HTTP %s)\n' "$http_status" >&2
   exit 1
 fi
-if [ -z "$token" ]; then
-  printf 'failure: no token received\n' >&2
+if [ -z "$work_id" ]; then
+  printf 'failure: no id received\n' >&2
   exit 1
 fi
-printf 'token received: %s\n' "$token"
+printf 'id received: %s\n' "$work_id"
 
-# 2. Fetch the command bound to the token
-http_request GET "/work/$token"
+# 2. Fetch the command bound to the id
+http_request GET "/work/$work_id"
 task_command="$http_body"
 if [ "$http_status" != "200" ] || [ -z "$task_command" ]; then
-  printf 'failure: command unavailable for token %s (HTTP %s)\n' "$token" "$http_status" >&2
+  printf 'failure: command unavailable for id %s (HTTP %s)\n' "$work_id" "$http_status" >&2
   exit 1
 fi
 printf 'command: %s\n' "$task_command"
@@ -57,10 +57,10 @@ output="$(sh -c "$task_command" 2>&1)"
 exit_code=$?
 
 # 4. Report the result
-http_request POST "/done/$token" "output=$output"
+http_request POST "/done/$work_id" "output=$output"
 if [ "$http_status" != "200" ]; then
   printf 'failure: could not report result (HTTP %s)\n' "$http_status" >&2
 fi
-printf 'result sent to /done/%s (exit: %s)\n' "$token" "$exit_code"
+printf 'result sent to /done/%s (exit: %s)\n' "$work_id" "$exit_code"
 
 exit "$exit_code"

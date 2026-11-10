@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# lib/core.sh — shared pure-bash building blocks (sourced, no auto-execution).
-# All configuration lives in config.env / config.env.example; sourcing them with
-# `set -a` is what exports them, so there is no hand-maintained export list.
+# lib/core.sh — shared paths, configuration, logging and git primitives.
 set -uo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -43,8 +41,7 @@ has_command() {
   command -v "$1" >/dev/null 2>&1
 }
 
-# Print the SHA-256 digest of a string as lowercase hex. One of these tools is
-# present on every supported system.
+# Print the SHA-256 digest of a string as lowercase hex.
 sha256_hex() {
   local value="${1:-}"
   if has_command sha256sum; then
@@ -64,6 +61,44 @@ state_init() {
   : >> "$STATE_DIR/db.tsv"
 }
 
-new_id() {
-  printf '%s.%s' "$$" "$(date +%s%N)"
+# --- git --------------------------------------------------------------------
+# One implementation for the personal tree and the journal.
+git_run() {
+  local root="$1"; shift
+  git -C "$root" \
+    -c user.name="${JOURNAL_GIT_NAME:-beaut}" \
+    -c user.email="${JOURNAL_GIT_EMAIL:-beaut@localhost}" "$@"
+}
+
+git_repo() {
+  [[ -e "$1/.git" ]] && return 0
+  git -C "$1" rev-parse --git-dir >/dev/null 2>&1
+}
+
+git_init() {
+  mkdir -p -- "$1" || return 1
+  git_repo "$1" && return 0
+  git -C "$1" init -q -b main 2>/dev/null || git -C "$1" init -q
+}
+
+# Accept pushes into a checked-out working tree (server-side repositories).
+git_accept_pushes() {
+  git_repo "$1" || return 0
+  git -C "$1" config receive.denyCurrentBranch updateInstead >/dev/null 2>&1 || true
+}
+
+git_pull() {
+  git_repo "$1" || return 0
+  git_run "$1" pull --rebase --autostash >/dev/null 2>&1 || true
+}
+
+git_commit_all() {
+  git_repo "$1" || return 0
+  git_run "$1" add -A >/dev/null 2>&1 || true
+  git_run "$1" commit -m "$2" >/dev/null 2>&1 || true
+}
+
+git_push() {
+  git_repo "$1" || return 0
+  git_run "$1" push --set-upstream origin HEAD >/dev/null 2>&1 || true
 }

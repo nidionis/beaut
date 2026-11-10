@@ -50,6 +50,7 @@ server_start() {
 
   mkdir -p -- "$published_root" "$state_directory"
   export STATE_DIR="$state_directory"
+  export SVR_ROOT="${SVR_ROOT:-$state_directory/svr}"
   export PUBLISHED_ROOT="$published_root"
   export NOT_FOUND_BODY="${NOT_FOUND_BODY:-404}"
   export LOG_LEVEL="${LOG_LEVEL:-error}"

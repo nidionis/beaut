@@ -121,12 +121,3 @@ assert_contains "$cli_invites" 'invite_id' "CLI invite list header"
 assert_contains "$cli_invites" 'cli' "CLI invite list note"
 assert_failure "invite option without a value is rejected" \
   bash -c "cd '$PROJECT_ROOT' && bash scripts/device.sh invite --trust"
-
-# --- legacy key path is honoured -------------------------------------------
-legacy_sandbox="$sandbox/legacy"
-mkdir -p "$legacy_sandbox/state"
-printf 'LEGACY-PRIVATE\n' > "$legacy_sandbox/state/wg_private.key"
-printf 'LEGACY-PUBLIC\n' > "$legacy_sandbox/state/wg_public.key"
-STATE_DIR="$legacy_sandbox/state"
-assert_equal "$legacy_sandbox/state/wg_private.key" "$(device_private_key_file)" "legacy private key"
-assert_equal "$legacy_sandbox/state/wg_public.key" "$(device_public_key_file)" "legacy public key"

@@ -30,33 +30,13 @@ wireguard_network_base() {
 }
 
 wireguard_address_prefix() {
-  local base
-  base="$(wireguard_network_base)"
-  printf '%s.' "${base%.*}"
+  device_address_prefix
 }
 
 # Reuse existing keys; generate only what is missing. This keeps a server
 # public key stable across deploys, so previously joined peers stay valid.
 ensure_wireguard_keys() {
-  local private_file public_file
-  private_file="$(wireguard_private_key_file)"
-  public_file="$(wireguard_public_key_file)"
-  mkdir -p -- "$(dirname "$private_file")"
-
-  if [[ -s "$private_file" ]]; then
-    log debug "reusing WireGuard private key: $private_file"
-  else
-    log info "generating WireGuard private key"
-    (umask 077; wg genkey > "$private_file")
-  fi
-  chmod 600 "$private_file"
-
-  if [[ -s "$public_file" ]]; then
-    log debug "reusing WireGuard public key: $public_file"
-  else
-    wg pubkey < "$private_file" > "$public_file"
-  fi
-  chmod 644 "$public_file"
+  device_local_identity_initialize "$(hostname 2>/dev/null || printf device)" >/dev/null
 }
 
 wireguard_interface_exists() {
@@ -104,21 +84,18 @@ nft_rebuild_nat_chain() {
 }
 
 iptables_ensure_rule() {
-  iptables -C "$@" >/dev/null 2>&1 || iptables -I "$@" >/dev/null 2>&1 || true
-}
-
-iptables_nat_ensure_rule() {
-  iptables -t nat -C "$@" >/dev/null 2>&1 \
-    || iptables -t nat -I "$@" >/dev/null 2>&1 || true
+  local table="$1"; shift
+  iptables -t "$table" -C "$@" >/dev/null 2>&1 \
+    || iptables -t "$table" -I "$@" >/dev/null 2>&1 || true
 }
 
 open_ports() {
   if has_command nft; then
     nft_rebuild_filter_chain
   elif has_command iptables; then
-    iptables_ensure_rule INPUT -p tcp --dport "$HTTP_PORT" -j ACCEPT
-    iptables_ensure_rule INPUT -p udp --dport "$WG_PORT" -j ACCEPT
-    iptables_ensure_rule INPUT -i wg0 -j ACCEPT
+    iptables_ensure_rule filter INPUT -p tcp --dport "$HTTP_PORT" -j ACCEPT
+    iptables_ensure_rule filter INPUT -p udp --dport "$WG_PORT" -j ACCEPT
+    iptables_ensure_rule filter INPUT -i wg0 -j ACCEPT
   fi
 }
 
@@ -126,7 +103,7 @@ setup_nat() {
   if has_command nft; then
     nft_rebuild_nat_chain
   elif has_command iptables; then
-    iptables_nat_ensure_rule POSTROUTING ! -o wg0 -j MASQUERADE
+    iptables_ensure_rule nat POSTROUTING ! -o wg0 -j MASQUERADE
   fi
 }
 

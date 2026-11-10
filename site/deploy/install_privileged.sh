@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
-# install_privileged.sh — refresh the root-owned privileged copy and its frozen
-# config. Runs as root through the SERVICE_USER sudo grant.
+# install_privileged.sh — install or refresh the root-owned copy of the scripts
+# and its frozen config. Runs as root through the SERVICE_USER sudo grant, and
+# from bootstrap.sh with the unpacked payload as SOURCE_DIRECTORY.
 #
-# SERVICE_HOME is passed explicitly because sudo resets HOME to the root home:
-#   sudo -n env SERVICE_HOME="$HOME" bash install_privileged.sh
+#   SOURCE_DIRECTORY       payload or $SERVICE_HOME/.beaut (default)
+#   SERVICE_ROOT           paths written to the frozen config (default SOURCE_DIRECTORY)
+#   ROOT_LIBRARY_DIRECTORY root-owned install prefix (/usr/local/lib/beaut)
 set -euo pipefail
 
-: "${SERVICE_HOME:?SERVICE_HOME is required}"
-
+SOURCE_DIRECTORY="${SOURCE_DIRECTORY:-${SERVICE_HOME:?SOURCE_DIRECTORY or SERVICE_HOME is required}/.beaut}"
+SERVICE_ROOT="${SERVICE_ROOT:-$SOURCE_DIRECTORY}"
+STATE_DIRECTORY="${STATE_DIR:-$SERVICE_ROOT/state}"
+PUBLISHED_DIRECTORY="${PUBLISHED_ROOT:-$SERVICE_ROOT/site}"
 ROOT_LIBRARY_DIRECTORY="${ROOT_LIBRARY_DIRECTORY:-/usr/local/lib/beaut}"
-SOURCE_DIRECTORY="$SERVICE_HOME/.beaut"
 
 [[ -d "$SOURCE_DIRECTORY/site/scripts" ]] || {
   printf 'missing source scripts: %s\n' "$SOURCE_DIRECTORY/site/scripts" >&2
@@ -30,9 +33,9 @@ install -d -m 755 "$ROOT_LIBRARY_DIRECTORY/site"
 cp -a "$SOURCE_DIRECTORY/site/scripts" "$ROOT_LIBRARY_DIRECTORY/site/scripts"
 
 # Overrides first, then the schema: derived paths use ${VAR:-default}, so the
-# service user's state wins and the root copy reads the same registry/keys.
+# service user's paths win and the root copy reads the same registry/keys.
 printf 'SERVICE_ROOT=%s\nSTATE_DIR=%s\nPUBLISHED_ROOT=%s\n' \
-  "$SOURCE_DIRECTORY" "$SOURCE_DIRECTORY/state" "$SOURCE_DIRECTORY/site" \
+  "$SERVICE_ROOT" "$STATE_DIRECTORY" "$PUBLISHED_DIRECTORY" \
   > "$ROOT_LIBRARY_DIRECTORY/config.env"
 cat "$SOURCE_DIRECTORY/config.env.example" >> "$ROOT_LIBRARY_DIRECTORY/config.env"
 

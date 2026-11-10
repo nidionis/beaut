@@ -36,6 +36,12 @@ assert_file_exists "$published_root/style.css" "site file is deployed"
 assert_equal "body { color: red; }" "$(cat "$published_root/style.css")" "site file content"
 assert_file_missing "$published_root/.gitignore" "dot-prefixed entries stay private"
 
+# --- generated top-level symlinks survive the swap --------------------------
+mkdir -p "$sandbox/personal"
+ln -s "$sandbox/personal" "$published_root/personal"
+run_sync
+assert_success "generated symlink survives" test -L "$published_root/personal"
+
 # --- the whole tree is replaced, so nothing stale survives -------------------
 printf 'stale\n' > "$published_root/stale.txt"
 rm -f "$site_source/style.css"

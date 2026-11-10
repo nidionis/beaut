@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # http_handler.sh — server-side HTTP handler (one connection per invocation).
-# The server never executes work: it serves files/scripts and validates tokens.
+# The server never executes work: it serves files/scripts and issues fictive ids.
 #
 # Dynamic routes (priority):
-#   GET  /work          -> return an id and the command (from $SVR_ROOT/command)
-#   GET  /work/<id>     -> return the command
+#   GET  /work          -> return a fictive id
+#   GET  /work/<id>     -> return the command (from $SVR_ROOT/command)
 #   POST /done/<id>     -> archive the posted result
 #   POST /get           -> dataset request (body: key=value&key=value)
 #   GET  /signin        -> enrollment instructions
@@ -25,10 +25,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib/http.sh"
 . "$SCRIPT_DIR/lib/devices.sh"
 . "$SCRIPT_DIR/lib/invites.sh"
-. "$SCRIPT_DIR/lib/personal_tree.sh"
 load_config
 
 STATE_DB="$STATE_DIR/db.tsv"
+svr_root="${SVR_ROOT:-$HOME/.svr}"
 state_init
 
 not_found() {
@@ -37,7 +37,7 @@ not_found() {
 
 # --- daily archive of a result ----------------------------------------------
 archive_result() {
-  local token="$1" result="$2"
+  local work_id="$1" result="$2"
   local day; day="$(date +%F)"
   local archive_dir="$STATE_DIR/archive/$day"
   mkdir -p "$archive_dir"
@@ -55,8 +55,8 @@ archive_result() {
 
   local timestamp; timestamp="$(date +%s)"
   local node_name; node_name="$(hostname 2>/dev/null || echo unknown)"
-  state_append "$STATE_DB" archive "$day" "$token" "$node_name" "$result" "$timestamp" "" ""
-  state_append "$archive_dir/results.tsv" "$token" "$node_name" "$result" "$timestamp" "" "" "" ""
+  state_append "$STATE_DB" archive "$day" "$work_id" "$node_name" "$result" "$timestamp" "" ""
+  state_append "$archive_dir/results.tsv" "$work_id" "$node_name" "$result" "$timestamp" "" "" "" ""
 }
 
 # --- static tree ------------------------------------------------------------
@@ -101,16 +101,10 @@ serve_directory_index() {
 }
 
 serve_tree() {
-  local requested_path="$1" root_directory="${2:-${PUBLISHED_ROOT:-}}"
-  local serve_mode="${3:-render}" extra_root="${4:-}"
-  local real_root real_extra target directory
-  if [[ -z "$root_directory" || ! -d "$root_directory" ]]; then
+  local requested_path="$1" target directory published_root svr_real journal_real serve_mode
+  published_root="${PUBLISHED_ROOT:-}"
+  if [[ -z "$published_root" || ! -d "$published_root" ]]; then
     not_found; return
-  fi
-  real_root="$(realpath -m -- "$root_directory" 2>/dev/null || printf '%s' "$root_directory")"
-  real_extra=''
-  if [[ -n "$extra_root" && -d "$extra_root" ]]; then
-    real_extra="$(realpath -m -- "$extra_root" 2>/dev/null || printf '%s' "$extra_root")"
   fi
 
   case "$requested_path" in
@@ -118,31 +112,28 @@ serve_tree() {
   esac
   path_has_hidden_segment "$requested_path" && { not_found; return; }
 
-  target="$(realpath -m -- "$root_directory/$requested_path" 2>/dev/null || true)"
-  if [[ -z "$target" ]]; then
+  target="$(realpath -m -- "${published_root%/}/$requested_path" 2>/dev/null || true)"
+  published_root="$(realpath -m -- "$published_root" 2>/dev/null || true)"
+  svr_real="$(realpath -m -- "$svr_root" 2>/dev/null || true)"
+  journal_real="$(realpath -m -- "$svr_root/journal" 2>/dev/null || true)"
+  # The public tree, the personal tree and its independent journal are the only
+  # served roots. The personal tree is streamed raw so journal content is never
+  # templated.
+  if [[ -n "$published_root" && ( "$target" == "$published_root" || "$target" == "$published_root"/* ) ]]; then
+    serve_mode=render
+  elif [[ -n "$svr_real" && ( "$target" == "$svr_real" || "$target" == "$svr_real"/* ) ]]; then
+    serve_mode=raw
+  elif [[ -n "$journal_real" && ( "$target" == "$journal_real" || "$target" == "$journal_real"/* ) ]]; then
+    serve_mode=raw
+  else
     not_found; return
-  fi
-  # The target must stay inside the served root, an explicit extra root, or
-  # the configured personal tree root (SVR_NAME symlink target).
-  if [[ "$target" != "$real_root" && "$target" != "$real_root"/* ]]; then
-    local allowed_extra="$real_extra" svr_real=""
-    if declare -F personal_tree_root >/dev/null 2>&1; then
-      svr_real="$(realpath -m -- "$(personal_tree_root 2>/dev/null)" 2>/dev/null || true)"
-    fi
-    if [[ -z "$allowed_extra" && -n "$svr_real" ]] || [[ -n "$svr_real" && ( "$target" == "$svr_real" || "$target" == "$svr_real"/* ) ]]; then
-      : # allowed via svr root
-    elif [[ -n "$allowed_extra" && ( "$target" == "$allowed_extra" || "$target" == "$allowed_extra"/* ) ]]; then
-      : # allowed
-    elif [[ -n "$svr_real" && ( "$target" == "$svr_real" || "$target" == "$svr_real"/* ) ]]; then
-      :
-    else
-      not_found; return
-    fi
   fi
 
   if [[ -d "$target" ]]; then
     directory="$target"
-    if ! target="$(find_default_file "$directory")"; then
+    if target="$(find_default_file "$directory")"; then
+      : # serve the page/script chosen by find_default_file
+    else
       serve_directory_index "$directory" "$requested_path"
       return
     fi
@@ -213,34 +204,34 @@ http_parse_request
 [[ -n "${http_method:-}" ]] || exit 0
 # Command served to workers: $SVR_ROOT/command, else a safe default.
 work_command() {
-  local cmd_file
-  if declare -F personal_tree_root >/dev/null 2>&1; then
-    cmd_file="$(personal_tree_root 2>/dev/null)/command"
-    [[ -f "$cmd_file" ]] && { cat -- "$cmd_file"; return; }
+  local command_file="$svr_root/command"
+  if [[ -f "$command_file" ]]; then
+    cat -- "$command_file"
+  else
+    printf 'echo hello-world\n'
   fi
-  printf 'echo hello-world\n'
 }
 
 case "$url_path" in
   work)
-    token="$(date +%s%N 2>/dev/null || echo "$$.$(date +%s)").$RANDOM"
-    http_send_response 200 "$token"
+    work_id="$(date +%s%N 2>/dev/null || echo "$$.$(date +%s)").$RANDOM"
+    http_send_response 200 "$work_id"
     ;;
   work/*)
-    token="${url_path#work/}"
-    if [[ -z "$token" ]]; then
+    work_id="${url_path#work/}"
+    if [[ -z "$work_id" ]]; then
       http_send_response 400 "missing id"
     else
       http_send_response 200 "$(work_command)"
     fi
     ;;
   done/*)
-    token="${url_path#done/}"
-    if [[ -z "$token" ]]; then
+    work_id="${url_path#done/}"
+    if [[ -z "$work_id" ]]; then
       http_send_response 400 "missing id"
     else
-      archive_result "$token" "$request_body"
-      http_send_response 200 "confirmed: $token"
+      archive_result "$work_id" "$request_body"
+      http_send_response 200 "confirmed: $work_id"
     fi
     ;;
   get)
@@ -265,12 +256,6 @@ case "$url_path" in
     serve_door
     ;;
   *)
-    _svr_name=""
-    if declare -F personal_tree_name >/dev/null 2>&1; then _svr_name="$(personal_tree_name 2>/dev/null || true)"; fi
-    if [[ -n "$_svr_name" && ( "$url_path" == "$_svr_name" || "$url_path" == "$_svr_name"/* ) ]]; then
-      serve_tree "$url_path" "${PUBLISHED_ROOT:-}" raw
-    else
-      serve_tree "$url_path"
-    fi
+    serve_tree "$url_path"
     ;;
 esac

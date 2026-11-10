@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
-# lib/journal.sh — reference-compatible journal inside the hidden personal tree.
+# lib/journal.sh — reference-compatible journal, independent of SVR_ROOT.
 #
-# Layout (same idea as ~/.svr/usr/bin/journal):
+# Layout:
 #   $JOURNAL_ROOT/YYYY/MM/DD/<subfolder>/<name>.md
-#   $JOURNAL_ROOT/YYYY/MM/DD/<subfolder>/<name>.md  (created with a header)
-#   $JOURNAL_ROOT/<host>/<subfolder>/<name>.md       (hard-link view)
-#   $JOURNAL_ROOT/index.html                         (generated index)
+#   $JOURNAL_ROOT/<host>/<subfolder>/<name>.md   (hard-link view)
+#   $JOURNAL_ROOT/index.html                     (generated index)
 #
-# The folder is a git repository when JOURNAL_GIT=1 and git is available:
-# pull before an edit, commit after it, push when a remote exists.
-# When the journal lives inside a worktree (.git file / shared repo), git
-# operations use that enclosing repository.
+# The root defaults to ~/journal; journal-perso uses PERSO_ROOT (by config,
+# $SVR_ROOT/perso). It is a git repository when JOURNAL_GIT=1 and git is
+# available: pull before an edit, commit after it, push when a remote exists.
 set -uo pipefail
 
 JOURNAL_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,62 +16,35 @@ if ! declare -F has_command >/dev/null 2>&1; then
   . "$JOURNAL_LIB_DIR/core.sh"
 fi
 
-
 journal_root() {
-  local name
   if [[ -n "${JOURNAL_ROOT:-}" ]]; then
     printf '%s' "$JOURNAL_ROOT"
-  elif [[ -n "${JOURNAL_DIRECTORY:-}" ]]; then
-    printf '%s' "$JOURNAL_DIRECTORY"
-  else
-    name="${JOURNAL_DIR:-journal}"
-    journal_validate_component "$name" || name=journal
-    if [[ -n "${JOURNAL_BASE:-}" ]]; then
-      printf '%s/%s' "$JOURNAL_BASE" "$name"
-    else
-      printf '%s/%s' "${HOME:-${SERVICE_ROOT:-/tmp}}" "$name"
-    fi
+    return 0
   fi
+  local name="${JOURNAL_DIR:-journal}"
+  journal_validate_component "$name" || name=journal
+  printf '%s/%s' "${JOURNAL_BASE:-${HOME:-${SERVICE_ROOT:-/tmp}}}" "$name"
 }
 
 journal_perso_root() {
-  local name
   if [[ -n "${PERSO_ROOT:-}" ]]; then
     printf '%s' "$PERSO_ROOT"
-  else
-    name="${PERSO_DIR:-perso}"
-    journal_validate_component "$name" || name=perso
-    if [[ -n "${JOURNAL_BASE:-}" ]]; then
-      printf '%s/%s' "$JOURNAL_BASE" "$name"
-    elif [[ -n "${PERSO_BASE:-}" ]]; then
-      printf '%s/%s' "$PERSO_BASE" "$name"
-    else
-      printf '%s/%s' "${HOME:-${SERVICE_ROOT:-/tmp}}" "$name"
-    fi
+    return 0
   fi
+  local name="${PERSO_DIR:-perso}"
+  journal_validate_component "$name" || name=perso
+  printf '%s/%s' "${JOURNAL_BASE:-${HOME:-${SERVICE_ROOT:-/tmp}}}" "$name"
 }
 
-journal_date() {
-  printf '%s' "${JOURNAL_DATE:-$(date +%F)}"
-}
-
-journal_time() {
-  printf '%s' "${JOURNAL_TIME:-$(date +%T)}"
-}
-
-journal_user() {
-  printf '%s' "${USER:-$(id -un 2>/dev/null || printf unknown)}"
-}
-
-journal_host() {
-  printf '%s' "${HOST:-$(hostname 2>/dev/null || printf unknown)}"
-}
+journal_date() { printf '%s' "${JOURNAL_DATE:-$(date +%F)}"; }
+journal_time() { printf '%s' "${JOURNAL_TIME:-$(date +%T)}"; }
+journal_user() { printf '%s' "${USER:-$(id -un 2>/dev/null || printf unknown)}"; }
+journal_host() { printf '%s' "${HOST:-$(hostname 2>/dev/null || printf unknown)}"; }
 
 journal_validate_date() {
-  local date="${1:-}"
+  local date="${1:-}" month day
   [[ "$date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || return 1
-  # Reject impossible months/days and keep the path components numeric.
-  local month="${date:5:2}" day="${date:8:2}"
+  month="${date:5:2}" day="${date:8:2}"
   (( 10#$month >= 1 && 10#$month <= 12 )) || return 1
   (( 10#$day >= 1 && 10#$day <= 31 )) || return 1
 }
@@ -84,7 +55,6 @@ journal_validate_component() {
   [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
 }
 
-# YYYY/MM/DD for a date (defaults to JOURNAL_DATE/today).
 journal_date_parts() {
   local date="${1:-$(journal_date)}"
   journal_validate_date "$date" || {
@@ -94,7 +64,7 @@ journal_date_parts() {
   printf '%s/%s/%s' "${date:0:4}" "${date:5:2}" "${date:8:2}"
 }
 
-# Relative path inside the journal root.
+# Relative path inside the journal root: YYYY/MM/DD/<subfolder>/<name>.md.
 journal_relative_path() {
   local subfolder="${1:?missing subfolder}" name="${2:?missing name}" date_parts
   journal_validate_component "$subfolder" || {
@@ -132,20 +102,12 @@ journal_write_header() {
   journal_validate_date "$date" || return 1
   compact="${date:2:2}${date:5:2}${date:8:2}"
   {
-    printf '%s\n' "$compact"
-    printf '%s\n' "$(journal_time)"
-    printf '%s\n' "$(journal_user)"
-    printf '%s\n' "$(journal_host)"
-    printf '\n'
-    printf '###############################################\n'
-    printf '\n'
-    printf '%s\n' "$relative"
-    printf '\n'
+    printf '%s\n%s\n%s\n%s\n\n' "$compact" "$(journal_time)" "$(journal_user)" "$(journal_host)"
+    printf '###############################################\n\n%s\n\n' "$relative"
   } >> "$file"
 }
 
-# A per-host hard-link view of the journal, like the reference script. Fall
-# back to a symlink when the filesystem refuses a hard link.
+# Per-host hard-link view; fall back to a symlink when hard links are refused.
 journal_link_host() {
   local root="$1" subfolder="$2" name="$3" file="$4" link
   link="$root/$(journal_host)/$subfolder/$name.md"
@@ -153,56 +115,20 @@ journal_link_host() {
   ln -f -- "$file" "$link" 2>/dev/null || ln -sfn -- "$file" "$link"
 }
 
-# --- git ------------------------------------------------------------------
-# True when this root is (or is inside) a git repository/worktree.
-journal_git_repo() {
-  local root="$1"
-  [[ -e "$root/.git" ]] && return 0
-  git -C "$root" rev-parse --git-dir >/dev/null 2>&1
-}
-
+# --- git --------------------------------------------------------------------
 journal_git_ready() {
-  [[ "${JOURNAL_GIT:-1}" == "1" ]] || return 1
-  has_command git || return 1
-  journal_git_repo "$1"
+  [[ "${JOURNAL_GIT:-1}" == "1" ]] && has_command git && git_repo "$1"
 }
 
-journal_git_run() {
-  local root="$1"; shift
-  git -C "$root" \
-    -c user.name="${JOURNAL_GIT_NAME:-beaut}" \
-    -c user.email="${JOURNAL_GIT_EMAIL:-beaut@localhost}" "$@"
-}
-
-journal_git_pull() {
-  local root="$1"
-  journal_git_ready "$root" || return 0
-  journal_git_run "$root" pull --rebase --autostash >/dev/null 2>&1 || true
-}
-
-journal_git_commit() {
-  local root="$1" message="$2"
-  journal_git_ready "$root" || return 0
-  # Scope add to this root when it's a subdir of a larger repo.
-  journal_git_run "$root" add -A -- "$root" >/dev/null 2>&1 \
-    || journal_git_run "$root" add -A >/dev/null 2>&1 || true
-  journal_git_run "$root" commit -m "$message" >/dev/null 2>&1 || true
-}
-
-journal_git_push() {
-  local root="$1"
-  journal_git_ready "$root" || return 0
-  journal_git_run "$root" push --set-upstream origin HEAD >/dev/null 2>&1 || true
-}
+journal_git_pull() { journal_git_ready "$1" || return 0; git_pull "$1"; }
+journal_git_commit() { journal_git_ready "$1" || return 0; git_commit_all "$1" "$2"; }
+journal_git_push() { journal_git_ready "$1" || return 0; git_push "$1"; }
 
 journal_remote_set() {
   local root="$1" url="$2"
   [[ -n "$url" ]] || { printf 'missing git remote URL\n' >&2; return 1; }
   has_command git || { printf 'git is required for remotes\n' >&2; return 1; }
-  [[ -d "$root" ]] || mkdir -p -- "$root"
-  if ! journal_git_repo "$root"; then
-    git -C "$root" init -q
-  fi
+  git_init "$root" || return 1
   if git -C "$root" remote get-url origin >/dev/null 2>&1; then
     git -C "$root" remote set-url origin "$url"
   else
@@ -210,38 +136,25 @@ journal_remote_set() {
   fi
 }
 
-# A remote may be a plain git URL or the sentinel "hidden", which points at the
-# journal folder inside the server's hidden tree. JOURNAL_REMOTE_ROOT pins the
-# server-side path when the command runs on another machine; otherwise the
-# local SERVICE_ROOT/hidden-name is used.
+# Resolve "server" to user@host:path. JOURNAL_REMOTE_PATH/PERSO_REMOTE_PATH are
+# exact repo paths on the server; the defaults are ~/journal and ~/perso.
 journal_remote_resolve() {
-  local remote="${1:-}" root="${2:-$(journal_root)}" host user base
+  local remote="${1:-}" root="${2:-$(journal_root)}" host user repo_path port
   case "$remote" in
-    ''|none|0)
-      return 1
-      ;;
-    hidden|server)
+    ''|none|0) return 1 ;;
+    server|hidden)
       host="${JOURNAL_REMOTE_HOST:-${SERVER_HOST:-}}"
       user="${JOURNAL_REMOTE_USER:-${SERVICE_USER:-$(journal_user)}}"
       [[ -n "$host" ]] || {
-        printf 'JOURNAL_REMOTE=hidden requires JOURNAL_REMOTE_HOST or SERVER_HOST\n' >&2
+        printf 'JOURNAL_REMOTE=server requires JOURNAL_REMOTE_HOST or SERVER_HOST\n' >&2
         return 1
       }
-      base="${JOURNAL_REMOTE_ROOT:-}"
-      if [[ -z "$base" ]]; then
-        # Default: ~/journal (or configured JOURNAL_REMOTE_PATH) on the server.
-        base="${JOURNAL_REMOTE_PATH:-~/${JOURNAL_DIR:-journal}}"
-        # For perso, use perso name when resolving perso root.
-        if [[ "$(basename "$root")" == "${PERSO_DIR:-perso}" ]]; then
-          base="${PERSO_REMOTE_PATH:-${JOURNAL_REMOTE_PATH:-~/${PERSO_DIR:-perso}}}"
-        fi
+      if [[ "$root" == "$(journal_perso_root)" ]]; then
+        repo_path="${PERSO_REMOTE_PATH:-~/${PERSO_DIR:-perso}}"
+      else
+        repo_path="${JOURNAL_REMOTE_PATH:-~/${JOURNAL_DIR:-journal}}"
       fi
-      local port="${JOURNAL_SSH_PORT:-${SSH_PORT:-}}"
-      local repo_path="$base/$(basename "$root")"
-      # Prefer .git bare/normal repo path when it exists conceptually.
-      if [[ "${JOURNAL_REMOTE_STYLE:-}" == "bare" ]] || [[ -d "$repo_path.git" && "${JOURNAL_REMOTE_STYLE:-}" != "plain" ]]; then
-        repo_path="$repo_path.git"
-      fi
+      port="${JOURNAL_SSH_PORT:-${SSH_PORT:-}}"
       if [[ -n "$port" && "$port" != "22" ]]; then
         printf 'ssh://%s@%s:%s/%s' "$user" "$host" "$port" "${repo_path#/}"
       else
@@ -256,7 +169,7 @@ journal_remote_resolve() {
 
 journal_remote_get() {
   local root="$1"
-  [[ -d "$root/.git" || -f "$root/.git" ]] || git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || return 1
+  git_repo "$root" || return 1
   git -C "$root" remote get-url origin 2>/dev/null
 }
 
@@ -266,45 +179,52 @@ journal_sync() {
   journal_git_push "$root"
 }
 
-# --- writes ---------------------------------------------------------------
+# --- writes -----------------------------------------------------------------
+# Start one entry: pull, create the date folder and the reference header.
+journal_begin() {
+  local root="$1" subfolder="$2" name="$3"
+  journal_relative="$(journal_relative_path "$subfolder" "$name")" || return 1
+  journal_file="$root/$journal_relative"
+  journal_git_pull "$root"
+  mkdir -p -- "$(dirname "$journal_file")" || return 1
+  chmod 700 -- "$(dirname "$journal_file")" 2>/dev/null || true
+  [[ -f "$journal_file" ]] || journal_write_header "$journal_file" "$journal_relative" || return 1
+}
+
+# Finish one entry: host view, index, commit, push.
+journal_finish() {
+  local root="$1" subfolder="$2" name="$3"
+  chmod 600 "$journal_file" 2>/dev/null || true
+  journal_link_host "$root" "$subfolder" "$name" "$journal_file"
+  journal_refresh_index "$root"
+  journal_git_commit "$root" "journal: $journal_relative"
+  journal_git_push "$root"
+  printf '%s' "$journal_file"
+}
+
 journal_write_text() {
-  local root="$1" subfolder="$2" name="$3" text="${4:-}" \
-        relative file
+  local root="$1" subfolder="$2" name="$3" text="${4:-}" remote="${5:-${JOURNAL_REMOTE:-}}"
   [[ -n "$text" ]] || {
     printf 'journal entry text is required\n' >&2
     return 1
   }
-  journal_initialize_root "$root" "${JOURNAL_REMOTE:-}" || return 1
+  journal_initialize_root "$root" "$remote" || return 1
   text="${text//$'\n'/ }"
   text="${text//$'\t'/ }"
-  relative="$(journal_relative_path "$subfolder" "$name")" || return 1
-  file="$root/$relative"
-  journal_git_pull "$root"
-  mkdir -p -- "$(dirname "$file")"
-  chmod 700 -- "$(dirname "$file")" 2>/dev/null || true
-  if [[ ! -f "$file" ]]; then
-    journal_write_header "$file" "$relative" || return 1
-  fi
-  printf '%s\n' "$text" >> "$file"
-  chmod 600 "$file" 2>/dev/null || true
-  journal_link_host "$root" "$subfolder" "$name" "$file"
-  journal_refresh_index "$root"
-  journal_git_commit "$root" "journal: $relative"
-  journal_git_push "$root"
-  printf '%s' "$file"
+  journal_begin "$root" "$subfolder" "$name" || return 1
+  printf '%s\n' "$text" >> "$journal_file"
+  journal_finish "$root" "$subfolder" "$name"
 }
 
-# Non-interactive convenience used by `svr journal add "<text>"`.
 journal_add() {
-  local text="${1:-}"
   journal_write_text "$(journal_root)" "${JOURNAL_SUBFOLDER:-notes}" \
-    "${JOURNAL_FILE_NAME:-notes}" "$text"
+    "${JOURNAL_FILE_NAME:-notes}" "${1:-}"
 }
 
 # Open (or create) one entry in $EDITOR, then commit and push.
 journal_open_at() {
   local root="$1" default_subfolder="$2"; shift 2
-  local subfolder name relative file editor
+  local subfolder name editor
   case $# in
     1) subfolder="$default_subfolder"; name="$1" ;;
     2) subfolder="$1"; name="$2" ;;
@@ -313,58 +233,46 @@ journal_open_at() {
       return 1
       ;;
   esac
-  relative="$(journal_relative_path "$subfolder" "$name")" || return 1
-  file="$root/$relative"
-  journal_git_pull "$root"
-  mkdir -p -- "$(dirname "$file")"
-  if [[ ! -f "$file" ]]; then
-    journal_write_header "$file" "$relative" || return 1
-  fi
+  journal_begin "$root" "$subfolder" "$name" || return 1
   if [[ -n "${JOURNAL_TEXT:-}" ]]; then
-    printf '%s\n' "$JOURNAL_TEXT" >> "$file"
+    printf '%s\n' "$JOURNAL_TEXT" >> "$journal_file"
   else
     editor="${JOURNAL_EDITOR:-${EDITOR:-vi}}"
-    "$editor" "$file" || {
+    "$editor" "$journal_file" || {
       printf 'editor failed: %s\n' "$editor" >&2
       return 1
     }
   fi
-  chmod 600 "$file" 2>/dev/null || true
-  journal_link_host "$root" "$subfolder" "$name" "$file"
-  journal_refresh_index "$root"
-  journal_git_commit "$root" "journal: $relative"
-  journal_git_push "$root"
-  printf '%s' "$file"
+  journal_finish "$root" "$subfolder" "$name"
+}
+
+journal_open_root() {
+  local root="$1" remote="$2" default_subfolder="$3"; shift 3
+  journal_initialize_root "$root" "$remote" || return 1
+  journal_open_at "$root" "$default_subfolder" "$@"
 }
 
 journal_open() {
-  local root
-  root="$(journal_root)" || return 1
-  journal_initialize_root "$root" "${JOURNAL_REMOTE:-}" || return 1
-  journal_open_at "$root" "${JOURNAL_SUBFOLDER:-notes}" "$@"
+  journal_open_root "$(journal_root)" "${JOURNAL_REMOTE:-}" \
+    "${JOURNAL_SUBFOLDER:-notes}" "$@"
 }
 
 journal_perso_open() {
-  local root
-  root="$(journal_perso_root)" || return 1
-  journal_initialize_root "$root" "${PERSO_REMOTE:-}" || return 1
-  journal_open_at "$root" "${PERSO_SUBFOLDER:-fouretout}" "$@"
+  journal_open_root "$(journal_perso_root)" "${PERSO_REMOTE:-}" \
+    "${PERSO_SUBFOLDER:-fouretout}" "$@"
 }
 
-# --- listing and index ----------------------------------------------------
-# List Markdown entries, newest first, excluding the host view and .git.
+# --- listing and index ------------------------------------------------------
 journal_list() {
   local limit="${1:-0}" root="${2:-$(journal_root)}" file relative host_view
   [[ -d "$root" ]] || return 0
   [[ "$limit" =~ ^[0-9]+$ ]] || limit=0
   host_view="$root/$(journal_host)"
-  {
-    while IFS= read -r file; do
-      relative="${file#"$root"/}"
-      printf '%s\n' "$relative"
-    done < <(find "$root" -type f -name '*.md' \
-      ! -path "$root/.git/*" ! -path "$host_view/*" -print)
-  } | sort -r | awk -v limit="$limit" 'limit == 0 || NR <= limit'
+  while IFS= read -r file; do
+    printf '%s\n' "${file#"$root"/}"
+  done < <(find "$root" -type f -name '*.md' \
+    ! -path "$root/.git/*" ! -path "$host_view/*" -print) \
+    | sort -r | awk -v limit="$limit" 'limit == 0 || NR <= limit'
 }
 
 journal_show() {
@@ -410,18 +318,15 @@ journal_refresh_index() {
   chmod 600 "$root/index.html" 2>/dev/null || true
 }
 
-# --- initialization -------------------------------------------------------
+# --- initialization ---------------------------------------------------------
 journal_initialize_root() {
-  local root="$1" remote="$2"
-  mkdir -p -- "$root"
+  local root="$1" remote="${2:-}"
+  mkdir -p -- "$root" || return 1
   chmod 700 "$root" 2>/dev/null || true
   if [[ "${JOURNAL_GIT:-1}" == "1" ]] && has_command git; then
-    if ! journal_git_repo "$root"; then
-      git -C "$root" init -q
-    fi
-    # Accept pushes into this working tree (used when another machine pushes a
-    # journal to the hidden path served here).
-    git -C "$root" config receive.denyCurrentBranch updateInstead >/dev/null 2>&1 || true
+    git_init "$root" || return 1
+    # Accept pushes into this working tree (server side).
+    git_accept_pushes "$root"
     if [[ -n "$remote" ]]; then
       remote="$(journal_remote_resolve "$remote" "$root")" || return 1
       journal_remote_set "$root" "$remote" || return 1
@@ -436,24 +341,6 @@ journal_initialize() {
   journal_initialize_root "$(journal_root)" "${JOURNAL_REMOTE:-}"
 }
 
-journal_perso_initialize() {
-  journal_initialize_root "$(journal_perso_root)" "${PERSO_REMOTE:-}"
-}
-
-
-# Configure a journal repo to accept pushes (server side). Uses updateInstead
-# for checked-out repos; bare repos work naturally.
-journal_ensure_pushable() {
-  local root="$1"
-  [[ "${JOURNAL_GIT:-1}" == "1" ]] || return 0
-  has_command git || return 0
-  journal_git_repo "$root" || return 0
-  git -C "$root" config receive.denyCurrentBranch updateInstead >/dev/null 2>&1 || true
-  git -C "$root" config receive.denyNonFastForwards false >/dev/null 2>&1 || true
-}
-
 journal_push() {
-  local root="${1:-$(journal_root)}"
-  journal_ensure_pushable "$root"
-  journal_git_push "$root"
+  journal_git_push "${1:-$(journal_root)}"
 }

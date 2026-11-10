@@ -15,7 +15,7 @@ if command -v systemctl >/dev/null 2>&1 \
   echo "beaut user service is active"
 else
   pkill -f "http_server.sh" 2>/dev/null || true
-  setsid bash ~/.beaut/site/deploy/start.sh \
+  setsid bash ~/.beaut/site/scripts/http_server.sh \
     > ~/.beaut/state/http.log 2>&1 < /dev/null &
   echo "server started through setsid (see state/http.log)"
 fi

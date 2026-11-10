@@ -33,38 +33,13 @@ device_key_directory() {
   printf '%s' "${WG_KEY_DIRECTORY:-${STATE_DIR:?STATE_DIR is required}/wg}"
 }
 
-# Per-device keys live in state/wg. A pre-Batch-1 installation may still have
-# state/wg_private.key / state/wg_public.key: keep using those instead of
-# silently rotating the identity of an already joined server.
+# Per-device key pair under state/wg. Keys are never rotated implicitly.
 device_private_key_file() {
-  local modern legacy
-  if [[ -n "${WG_PRIVATE_KEY_FILE:-}" ]]; then
-    printf '%s' "$WG_PRIVATE_KEY_FILE"
-    return 0
-  fi
-  modern="$(device_key_directory)/device_private.key"
-  legacy="${STATE_DIR:?STATE_DIR is required}/wg_private.key"
-  if [[ -s "$modern" || ! -s "$legacy" ]]; then
-    printf '%s' "$modern"
-  else
-    printf '%s' "$legacy"
-  fi
+  printf '%s/device_private.key' "$(device_key_directory)"
 }
 
 device_public_key_file() {
-  local modern legacy_public private_file
-  if [[ -n "${WG_PUBLIC_KEY_FILE:-}" ]]; then
-    printf '%s' "$WG_PUBLIC_KEY_FILE"
-    return 0
-  fi
-  modern="$(device_key_directory)/device_public.key"
-  legacy_public="${STATE_DIR:?STATE_DIR is required}/wg_public.key"
-  private_file="$(device_private_key_file)"
-  if [[ "$private_file" == "${STATE_DIR:?STATE_DIR is required}/wg_private.key" ]]; then
-    printf '%s' "$legacy_public"
-  else
-    printf '%s' "$modern"
-  fi
+  printf '%s/device_public.key' "$(device_key_directory)"
 }
 
 device_registry_initialize() {
@@ -223,15 +198,6 @@ device_revoke() {
   local device_id="${1:?missing device id}"
   [[ -n "$(device_find "$device_id")" ]] || return 1
   device_update "$device_id" 6 "revoked"
-}
-
-device_rename() {
-  local device_id="${1:?missing device id}" name="${2:?missing device name}"
-  device_validate_name "$name" || {
-    printf 'invalid device name: %s\n' "$name" >&2
-    return 1
-  }
-  device_update "$device_id" 2 "$name"
 }
 
 device_list() {

@@ -11,7 +11,6 @@ export LC_ALL=C
 : "${PAYLOAD_ARCHIVE:=/tmp/beaut-bootstrap.tgz}"
 
 ROOT_LIB_DIR=/usr/local/lib/beaut
-SBIN_DIR=/usr/local/sbin
 TARGET_HOME=/home/$SERVICE_USER
 
 note() { printf '[bootstrap] %s\n' "$*" >&2; }
@@ -71,23 +70,14 @@ done
 chmod 700 "$home_dir/.beaut/state"
 
 # 4. root-owned copy of the scripts + frozen network config. Never writable by
-#    the service user: it runs through the sudo grant below.
+#    the service user: it runs through the sudo grant below. The same installer
+#    refreshes it on later deploys.
 WORK_DIR="$(mktemp -d)"
 tar xzf "$PAYLOAD_ARCHIVE" -C "$WORK_DIR"
-install -d -m 755 -o root -g root "$ROOT_LIB_DIR"
-rm -rf -- "$ROOT_LIB_DIR/site"
-install -d -m 755 -o root -g root "$ROOT_LIB_DIR/site"
-cp -a "$WORK_DIR/site/scripts" "$ROOT_LIB_DIR/site/scripts"
-# Overrides first, then the schema: the example uses ${VAR:-default}, so the
-# service-user paths win and every derived path (STATE_DIR, DEVICE_DIRECTORY,
-# SVR_ROOT, ...) is computed from them.
-printf 'SERVICE_ROOT=%s\nSTATE_DIR=%s\nPUBLISHED_ROOT=%s\n' \
-  "$TARGET_HOME/.beaut" "$TARGET_HOME/.beaut/state" "$TARGET_HOME/.beaut/site" \
-  > "$ROOT_LIB_DIR/config.env"
-cat "$WORK_DIR/config.env.example" >> "$ROOT_LIB_DIR/config.env"
-chown -R root:root "$ROOT_LIB_DIR"
-chmod -R go-w "$ROOT_LIB_DIR"
-find "$ROOT_LIB_DIR/site/scripts" -type f -name '*.sh' -exec chmod 755 {} +
+SOURCE_DIRECTORY="$WORK_DIR" SERVICE_ROOT="$TARGET_HOME/.beaut" \
+  STATE_DIR="$TARGET_HOME/.beaut/state" PUBLISHED_ROOT="$TARGET_HOME/.beaut/site" \
+  ROOT_LIBRARY_DIRECTORY="$ROOT_LIB_DIR" \
+  bash "$WORK_DIR/site/deploy/install_privileged.sh"
 
 # 5. sudo grant for the service user (full, passwordless; validated with visudo)
 install -d -m 755 /etc/sudoers.d
