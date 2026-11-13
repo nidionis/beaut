@@ -1,0 +1,75 @@
+# beaut operator configuration.
+#
+# Copy to beaut.conf (or run `beaut init`).  This file is sourced as Bash.
+#
+# Protected defaults - identity, paths, listener ports, limits, HTTP constants,
+# package kinds and route modes - live in etc/beaut.defaults.conf.  That file
+# loads first and must not be edited.  Put only deployment-specific overrides
+# here.
+#
+# Remote installation uses ~/.ssh/config for port, key and proxy.  The login
+# is always BEAUT_NAME (beaut); scripts/bootstrap-node.sh prepares it with
+# passwordless sudo.  This file never contains key material or passwords.
+
+# ---- service identity -------------------------------------------------------
+# Group/user created on every node and used by the systemd units.
+BEAUT_NAME="beaut"
+
+# ---- hub --------------------------------------------------------------------
+BEAUT_HUB_NAME="hub1"
+BEAUT_HUB_BIND="0.0.0.0"
+BEAUT_HUB_PORT="8080"
+# Address used by remote CLI users and generated worker configs.  For a real
+# deployment set this (and BEAUT_PUBLIC_URL) to a reachable public/LAN address.
+BEAUT_HUB_URL="http://127.0.0.1:8080"
+BEAUT_PUBLIC_URL="$BEAUT_HUB_URL"
+BEAUT_HUB_DOMAIN="localhost"
+# Optional address advertised to workers when BEAUT_PUBLIC_URL is loopback,
+# for example during the first install.  Defaults to the host in BEAUT_HUB_URL.
+# BEAUT_HUB_ADVERTISE="192.0.2.10"
+
+# ---- this worker (ignored when serving as the hub) --------------------------
+BEAUT_WORKER_NAME="$(hostname -s 2>/dev/null || printf 'worker')"
+BEAUT_WORKER_BIND="0.0.0.0"
+BEAUT_WORKER_PORT="8090"
+# Empty lets the runtime pick the first host address.  Set it explicitly when
+# the hub must reach a specific interface.
+BEAUT_WORKER_ADVERTISE=""
+
+# ---- remote installation ----------------------------------------------------
+# `beaut install hub` connects to the host in BEAUT_HUB_URL.  Port and key are
+# read from ~/.ssh/config.  Run `sudo scripts/bootstrap-node.sh` on a new node
+# once; it creates BEAUT_NAME and authorizes the invoking user's SSH keys.
+
+# ---- worker registry --------------------------------------------------------
+# name | host (reachable from the hub) | HTTP port | preferred hub | weight
+BEAUT_WORKERS=(
+  # "w1|192.0.2.11|8090|hub1|100"
+  # "w2|192.0.2.12|8090|hub1|50"
+)
+
+# Optional per-worker resource overrides.  Installation uses the worker's
+# registry host; port and key come from ~/.ssh/config.
+# BEAUT_WORKER_w1_CPUS="8"
+# BEAUT_WORKER_w1_MEMORY_MB="16384"
+# BEAUT_WORKER_w1_DISK_MB="500000"
+# BEAUT_WORKER_w1_TAGS="cpu,ssd"
+# BEAUT_WORKER_w1_MAX_SESSIONS="4"
+
+# ---- HTTP / TCP routes ------------------------------------------------------
+# name | domain or * | path prefix | worker | worker port | http|tcp | hub | tcp listen
+BEAUT_ROUTES=(
+  # "app1|app.example.com|/|w1|8080|http|hub1|"
+  # "ssh1|ssh.example.com|/|w1|2222|tcp|hub1|22022"
+)
+
+# ---- optional runtime overrides ---------------------------------------------
+# Everything below is supplied by etc/beaut.defaults.conf.  Uncomment only
+# when this deployment differs from the defaults.
+# BEAUT_MIN_COPIES="2"
+# BEAUT_STRICT_COPIES="1"
+# BEAUT_CHUNK_SIZE="1048576"
+# BEAUT_INSTALL_DEPS="1"
+# BEAUT_INSTALL_DOCKER="0"
+# BEAUT_ENABLE_ROUTER="1"
+# BEAUT_SESSION_SNAPSHOT_ON_STOP="1"

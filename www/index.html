@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>beaut</title>
+  <style>
+    :root { color-scheme: dark; --bg:#111; --panel:#1b1b1b; --line:#333; --fg:#eee; --muted:#999; --accent:#7cc4ff; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    header { padding:24px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+    h1 { margin:0; font-size:20px; letter-spacing:.08em; }
+    h2 { font-size:13px; text-transform:uppercase; color:var(--muted); margin:0 0 10px; }
+    main { padding:24px; display:grid; gap:16px; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); }
+    section { background:var(--panel); border:1px solid var(--line); padding:16px; overflow:auto; }
+    pre { margin:0; white-space:pre-wrap; word-break:break-word; }
+    .ok { color:#8ee28e; } .bad { color:#ff8f8f; } .muted { color:var(--muted); }
+    a { color:var(--accent); }
+    .pill { border:1px solid var(--line); padding:2px 6px; border-radius:99px; font-size:11px; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>beaut</h1>
+  <div class="muted" id="meta">loading…</div>
+</header>
+<main>
+  <section><h2>hub</h2><pre id="hub">…</pre></section>
+  <section><h2>workers</h2><pre id="workers">…</pre></section>
+  <section><h2>routes</h2><pre id="routes">…</pre></section>
+  <section><h2>packages</h2><pre id="packages">…</pre></section>
+  <section><h2>sessions</h2><pre id="sessions">…</pre></section>
+  <section><h2>quick commands</h2>
+    <pre>beaut package add FILE
+beaut route add NAME HOST PATH WORKER PORT
+beaut session create NAME IMAGE
+beaut session snapshot ID
+beaut deploy all</pre>
+  </section>
+</main>
+<script>
+async function get(path) {
+  const r = await fetch(path);
+  if (!r.ok) throw new Error(path + " " + r.status);
+  return r.json();
+}
+function text(id, value) { document.getElementById(id).textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2); }
+async function refresh() {
+  try {
+    const [hub, workers, routes, packages, sessions] = await Promise.all([
+      get("/v1/info"), get("/v1/workers"), get("/v1/routes"), get("/v1/packages"), get("/v1/sessions")
+    ]);
+    text("hub", hub);
+    text("workers", workers);
+    text("routes", routes);
+    text("packages", packages.map(p => p.id + "  " + p.kind + "  " + p.name + "  copies=" + (p.copies||[]).length)));
+    text("sessions", sessions);
+    document.getElementById("meta").textContent = hub.name + " · " + hub.public_url;
+  } catch (e) {
+    document.getElementById("meta").textContent = String(e);
+  }
+}
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
