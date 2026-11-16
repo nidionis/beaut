@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Site route: /hello/world
+html_page "Hello, world" "$(<"$SITE_DIR/hello/world.html")"

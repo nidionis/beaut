@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# beaut-hub-http - answer one hub HTTP request. Takes no arguments.
+set -uo pipefail
+
+. "$(dirname -- "$0")/../lib/bootstrap.sh"
+load_config
+handle_hub

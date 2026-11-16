@@ -1,338 +1,273 @@
 # beaut
 
-A small, self-hosted fabric for moving packages, routing domain/path traffic and
-keeping persistent Docker sessions on worker machines. It is intentionally a
-V1: Bash on the control and data plane, `socat` for sockets, `jq` for JSON and
-the Docker CLI for sessions. No Python and no database.
+A small operator-owned fabric: one hub, a few workers, readable state, and
+deployment over SSH that is already open.
 
-## What it does
+This repository is the **minimal base**, not the full package/session layer.
+It gives the project a working spine:
 
-- **Hub** — one HTTP listener that accepts packages, exposes an API, proxies
-  configured domains/paths to workers and serves a small dashboard.
-- **Workers** — HTTP listeners that store replicated package chunks and run
-  Docker sessions.
-- **Content-addressed store** — every file is split into chunks. Package and
-  chunk names are SHA-256 hashes, so duplicate content is stored once.
-- **Two copies by default** — an upload is copied to the hub and then pushed to
-  workers until `BEAUT_MIN_COPIES` copies exist. Strict mode rejects an upload
-  that cannot reach the target.
-- **HTTP routes** — `domain + path prefix -> worker:port`, resolved by the hub
-  without a database.
-- **Raw TCP routes** — the `beaut router` process keeps `socat` listeners that
-  forward arbitrary streams to a worker port.
-- **Persistent sessions** — Docker containers are named and tracked; a
-  snapshot is committed/saved and stored as a replicated package. A session
-  can be stopped, started again, restored on another worker, or removed.
-- **Installation** — `sudo ./scripts/bootstrap-node.sh` prepares the service
-  account, SSH keys and sudo on a new node. `beaut install` (alias `beaut
-  deploy`) then writes the config and starts systemd units (or a detached
-  process when systemd is not running). Remote targets are uploaded over SFTP
-  and installed through SSH; a target that resolves to this machine is
-  installed directly from the checkout, without SSH.
+- a hub that inventories workers, serves a dashboard/JSON API and serves the
+  `site/` folder tree;
+- a worker that reports CPU, memory, disk and uptime;
+- optional reverse-SSH tunnels for workers behind NAT;
+- a local resource probe and a small `awk` formatter;
+- a `deploy.sh` that installs the tree and user systemd units over existing SSH;
+- no sudo, no database, no dependencies beyond Bash, `socat`, `curl`, `jq`, `ssh`, `awk`, `tar`.
+
+The hub is reached through one public URL. There is no localhost or LAN-IP
+fallback in the runtime: set `PUBLIC_URL` and use it.
+
+## Shape
+
+```text
+                         PUBLIC_URL
+                             │
+                             ▼
+                    ┌────── hub ───────┐
+                    │ /  /status       │
+                    │ /health  /workers│
+                    │ site/ tree       │
+                    └────────┬─────────┘
+                             │ tunnel or direct probe
+                    ┌────────▼─────────┐
+                    │      worker      │
+                    │ /health  /info   │
+                    └──────────────────┘
+```
+
+The hub polls each worker on `/info` (through its reverse tunnel first, then
+directly at `host:port`). Everything it sees is cached in `state/workers.tsv`;
+the dashboard and `beaut status` show the live result.
+
+## Layout
+
+```text
+beaut                  CLI: the only argument parser
+bin/
+  beaut-hub            run the hub listener
+  beaut-worker         run the worker listener
+  beaut-hub-http       answer one hub HTTP request
+  beaut-worker-http    answer one worker HTTP request
+  beaut-tunnel         keep the reverse SSH tunnel
+  beaut-relay          expose the hub through a relay
+lib/
+  bootstrap.sh         locate the tree, select config, load modules
+  common.sh            logging, validation, template rendering
+  config.sh            conf.env + node.env + defaults
+  resources.sh         local resource probe
+  http.sh              HTTP request/response layer and listener
+  site.sh              folder-tree route server
+  hub.sh               worker inventory, state cache, dashboard, listener
+  worker.sh            worker handler and listener
+  transport.sh         reverse tunnels and public relay
+  service.sh           per-user systemd units
+  status.sh            public hub status client
+  doctor.sh            configuration and dependency check
+share/
+  dashboard.html       dashboard template
+  page.html            site page template
+  usage.txt            help text
+  awk/                 resource and status formatters
+  jq/                  inventory, cache and dashboard filters
+  systemd/             unit templates
+site/
+  hello/world          example route for /hello/world
+  hello/world.html     example page fragment
+deploy.sh              install/update nodes over SSH
+conf.env.example       configuration template
+tests/smoke.sh         loopback hub + worker contract test
+tests/fixtures/        test configuration
+```
+
+Only `beaut` interprets arguments. The `bin/` programs take none and each call
+one function; `socat` and systemd invoke them directly. Modules under `lib/`
+derive paths from `BEAUT_ROOT`, `BEAUT_CONFIG` and `BEAUT_ENV` instead of
+hard-coding an install directory. Templates and filters are ordinary files
+under `share/`; the shell does not embed them with heredocs.
+
+On an installed node:
+
+```text
+~/.beaut/app/          deployed tree
+~/.beaut/app/bin/      argument-free entrypoints
+~/.beaut/app/site/     site routes
+~/.beaut/app/conf.env
+~/.beaut/node.env      generated per-node overrides
+~/.beaut/state/        workers.tsv
+~/.beaut/logs/         reserved for file logs (systemd uses the journal)
+~/.config/systemd/user/beaut-*.service
+```
 
 ## Requirements
 
-Control and worker nodes need:
+- Bash 4.2+, `socat`, `curl`, `jq`, `ssh`, `awk`, `tar`
+- a user systemd session on hub and workers (`systemctl --user`)
+- `loginctl enable-linger <user>` so units survive logout
+- SSH access from the deployment machine to every worker
+- no root or sudo is used
 
-- Bash 4.2+, `socat`, `jq`, `curl`, `tar`, `gzip`
-- Docker on workers that run sessions
-- Remote installation: OpenSSH `ssh`/`sftp` with port/key from
-  `~/.ssh/config`, plus passwordless sudo for the installation account
-- Local installation: root or sudo on this machine (the `beaut` account is
-  still required)
-- Optional: `systemd` for service management
-
-The hub and worker listeners are plain HTTP and have no authentication. Run
-them on a trusted network or put a TLS/authenticating reverse proxy in front of
-the hub.
-
-## Quick start from a checkout
+## Configure
 
 ```bash
-cp beaut.conf.example beaut.conf
-$EDITOR beaut.conf
-./beaut.sh doctor
-./beaut.sh hub serve
+cp conf.env.example conf.env
+$EDITOR conf.env
 ```
 
-In another terminal, for a worker on the same machine:
+`PUBLIC_URL` is the only URL clients use. There is deliberately no separate
+hub URL and no loopback fallback:
 
 ```bash
-BEAUT_CONFIG=./beaut.conf ./beaut.sh worker serve
+PUBLIC_URL="https://beaut.example.net"
 ```
 
-The default config uses repo-local `state/` and `store/` directories so a test
-checkout does not need root. `scripts/install.sh` appends the installed
-`/var/lib/beaut` paths when the tree is deployed. Local `hub serve` /
-`worker serve` are development commands. `beaut install` is privileged:
-targets that resolve to this machine are installed directly from the checkout
-and use `sudo`, while other targets go through SSH/SFTP.
-
-The dashboard is at `http://127.0.0.1:8080/`; health is `/health` and the API
-starts at `/info`.
-
-## Configuration
-
-`beaut.conf` in the repository root is the operator-edited file. It is sourced
-as Bash and is git-ignored because it may contain SSH key paths. `beaut.sh init`
-copies `beaut.conf.example` into place.
-
-Protected defaults live in `etc/beaut.defaults.conf`: names, layout,
-listener ports, chunk/copy limits, HTTP status codes and reasons, package
-kinds, route modes and session prefixes. The runtime loads that file first and
-then the operator config, so `beaut.conf` should contain only deployment
-overrides. Do not edit the defaults file to customize a deployment.
-
-Important fields:
-
-```bash
-BEAUT_NAME="beaut"          # service account and default installation login
-BEAUT_HUB_NAME="hub1"
-BEAUT_HUB_BIND="0.0.0.0"
-BEAUT_HUB_PORT=8080
-BEAUT_HUB_URL="http://hub.example.com:8080"
-BEAUT_PUBLIC_URL="https://hub.example.com"   # what workers use to upload
-
-# name | host | port | preferred hub | weight
-BEAUT_WORKERS=(
-  "w1|192.168.1.10|8090|hub1|100"
-  "w2|192.168.1.11|8090|hub1|50"
-)
-
-# name | host | path | worker | worker_port | http|tcp | hub | tcp_listen
-BEAUT_ROUTES=(
-  "app1|app.example.com|/|w1|8080|http|hub1|"
-  "ssh1|ssh.example.com|/|w1|2222|tcp|hub1|22022"
-)
-```
-
-Remote installation logs in as `BEAUT_NAME` (`beaut`), using the port and key
-from `~/.ssh/config`, and needs passwordless sudo for that account. Local
-installation runs in place as root through `sudo`. Both require the `beaut`
-account; run `sudo ./scripts/bootstrap-node.sh` once to create it, authorize
-your SSH keys, grant sudo and add Docker access. There are no password
-settings.
-
-Worker capacity is declared in the operator config or per worker and exposed
-through `/info`:
-
-```bash
-BEAUT_WORKER_CPUS=8
-BEAUT_WORKER_MEMORY_MB=16384
-BEAUT_WORKER_DISK_MB=500000
-BEAUT_WORKER_TAGS="cpu,ssd"
-BEAUT_WORKER_MAX_SESSIONS=4
-
-# Optional per-worker deployment overrides.
-BEAUT_WORKER_w1_CPUS=16
-BEAUT_WORKER_w1_MAX_SESSIONS=8
-```
-
-`beaut worker resources --cpus 8 --memory 16384 --tags cpu,ssd --write` edits
-those lines for you.
-
-## CLI
-
-The CLI is a thin front end over two transports:
-
-- **SSH/SFTP or a local sudo** for installation (`beaut install ...`). A
-  target that is this machine runs the installer directly; other targets move
-  files over SFTP and run the installer through SSH. Remote access uses only
-  key/agent authentication.
-- **HTTP** for packages, routes, Docker sessions and diagnostics. It calls
-  `BEAUT_HUB_URL` first, so commands work from any machine that can reach the
-  hub. Local state is only a fallback when the hub is unreachable.
+Worker rows are pipe-separated:
 
 ```text
-beaut install hub|worker NAME|all      # alias: deploy
+name | host | port | ssh target (optional) | tunnel port (optional)
+```
+
+- `ssh` empty uses `SSH_USER@host`, or `host` when `SSH_USER` is empty.
+- `ssh` set to `local` means the worker runs on the hub machine; `deploy.sh`
+  installs it in place without SSH.
+- `tunnel port` empty means the hub reaches the worker directly at `host:port`.
+- with a tunnel port, the worker keeps
+  `ssh -R 127.0.0.1:<tunnel>:127.0.0.1:<worker port> <HUB_SSH>` and the hub
+  tries that endpoint before the direct one.
+- `HUB_SSH` is the SSH destination workers use for reverse tunnels. It is not a
+  web URL.
+
+A worker on the same machine as the hub needs no tunnel; mark its ssh field
+`local`.
+
+## Site routes
+
+The hub falls back to the `site/` folder tree for paths that are not core
+endpoints. A URL path maps directly to a file:
+
+```text
+/hello/world  ->  site/hello/world
+```
+
+The file is a Bash script, sourced by the hub with the HTTP helpers loaded.
+Only extensionless paths are routes: `site/hello/world.html` is data, not a
+route. The sample route is:
+
+```bash
+#!/usr/bin/env bash
+# Site route: /hello/world
+html_page "Hello, world" "$(<"$SITE_DIR/hello/world.html")"
+```
+
+`site/hello/world.html` holds the page fragment. Content can stay in ordinary
+files; the route script decides how to respond.
+
+Available helpers:
+
+- `html_page TITLE BODY` — render `share/page.html` as `text/html`;
+- `http_respond STATUS TYPE BODY` — send any raw response;
+- `http_not_found` — the standard 404.
+
+`SITE_PATH` and `SITE_FILE` are set before the script is sourced. Paths are
+validated: hidden components, `..`, `//` and non-URL-safe characters are
+rejected. There is no directory index; create a script for each route.
+
+Set `SITE_DIR` to serve another tree; empty uses `$BEAUT_ROOT/site`.
+
+## Deploy
+
+Run from the hub checkout:
+
+```bash
+./deploy.sh hub          # install/restart the hub here
+./deploy.sh workers      # all configured workers
+./deploy.sh w1           # one worker
+./deploy.sh all          # hub then workers
+```
+
+The hub is always installed locally. Workers are installed over
+`ssh <target>`, which must already work (key or agent). The script uses
+`BatchMode=yes` and never starts a password prompt. It uploads a tar stream,
+writes `~/.beaut/node.env`, installs user units, restarts them and reports
+inactive units with their journal lines.
+
+Useful overrides:
+
+```bash
+BEAUT_CONFIG=/path/to/conf.env ./deploy.sh all
+```
+
+The optional public relay is only touched when `HUB_RELAY` is non-empty:
+
+```bash
+HUB_RELAY="user@public-host"
+HUB_RELAY_PORT="18080"
+```
+
+That installs `beaut-relay.service`, which forwards
+`127.0.0.1:18080` on the public host to the local hub `:8081`. Leave
+`HUB_RELAY` empty to let an existing relay keep running untouched.
+
+### Migrating from an older build
+
+This base installs under the SSH user's `~/.beaut` and uses that user's
+systemd instance. If an older worker still runs under another account (for
+example the `beaut` service account) and holds the same port, stop it first or
+give the new worker a different port in its row. The local configuration in
+this checkout uses `8091` for the hub's own worker and leaves the old `8090`
+worker alone. An existing relay unit is also left running while `HUB_RELAY`
+is empty.
+
+## Commands
+
+```text
 beaut hub serve
 beaut worker serve
-beaut router run|sync|stop
-
-beaut package add FILE [--name N] [--kind K] [--copies N] [--allow-degraded]
-beaut package ls [--json] | show ID
-beaut package get ID OUT
-beaut package replicate|verify|scrub|stats
-beaut route add NAME HOST PATH WORKER PORT [http|tcp] [HUB] [LISTEN_PORT]
-beaut route ls|find|rm|sync
-beaut session create NAME IMAGE [--worker W] [--port N] [--protocol P] [--command CMD]...
-beaut session ls|show|stop|start|snapshot|restore|move|exec|rm
-beaut workers [--json]
-beaut status
+beaut worker tunnel
+beaut relay
+beaut service install hub|worker
+beaut status [--json]
+beaut resources [--raw|--json]
+beaut deploy [hub|workers|all|NAME]
 beaut doctor
-beaut help api
-beaut config path|show|edit
 ```
 
-Examples:
+`beaut resources` is the resource probe; `beaut resources --raw` is the
+key=value form consumed by `share/awk/resources.awk`.
 
-```bash
-# Install the hub and workers.  Local targets run in place; remote targets are
-# uploaded over SFTP and installed through SSH.
-./beaut.sh install hub
-./beaut.sh install worker w1
-./beaut.sh install all
+The listener/tunnel/relay commands are thin aliases for `bin/beaut-*`. Systemd
+runs those programs directly, so the service path never re-interprets a role
+argument. `beaut` itself is the only command-line parser.
 
-# Store a file twice (hub + first eligible worker).
-beaut package add ./image.tar --kind oci-image --copies 2
+## Endpoints
 
-# Point app.example.com at worker w1 port 8080.
-beaut route add app1 app.example.com / w1 8080 http hub1
+Hub:
 
-# Forward public TCP port 22022 to worker w1 port 2222.
-beaut route add ssh1 '*' / w1 2222 tcp hub1 22022
-beaut router sync
+- `GET /` — HTML dashboard, refreshed every 15s
+- `GET /health` — `ok`
+- `GET /status` — `{hub, now, workers:[…]}`
+- `GET /workers` — worker array only
+- `GET /<path>` — `site/<path>` route script, else 404
 
-# Persistent Alpine session and command execution through the hub API.
-beaut session create demo alpine:3 --worker w1 --port 8080 --command sleep --command infinity
-beaut session exec s_... -- uname -a
-beaut session snapshot s_...
-beaut session restore s_... --worker w2
-beaut session rm s_...
-```
+Worker:
 
-A running session is reachable through the hub at
-`http://<hub>/s/<session-id>/...`. `beaut help api` prints the endpoint map,
-including the HTTP requests used for Docker lifecycle and package uploads, so
-scripts do not need to invent ad-hoc command lines or addresses.
+- `GET /health` — `ok`
+- `GET /info` — local resource JSON
 
-All hub addresses come from `beaut.conf` (`BEAUT_HUB_URL`). The CLI has no
-hard-coded hub or worker address.
-
-## HTTP API
-
-| Method | Path | Meaning |
-| --- | --- | --- |
-| GET | `/health` | liveness |
-| GET | `/info` | role, version, store/session/route summary |
-| GET | `/workers` | configured workers with live capacity |
-| GET/POST | `/routes` | list or add routes |
-| GET | `/routes/find?host=H&path=P` | resolve the best route |
-| DELETE | `/routes/NAME` | remove a route |
-| GET | `/packages` | package manifests |
-| PUT | `/packages?name=N&kind=K&copies=C` | upload a package body |
-| GET | `/packages/ID` | manifest |
-| GET | `/packages/ID/download` | reconstructed bytes |
-| POST | `/packages/ID/replicate` | retry replication |
-| POST | `/packages/ID/verify?full=1` | verify chunks or the whole package |
-| GET | `/store/stats` | package/object/byte counts |
-| POST | `/store/scrub` | verify every package |
-| GET/POST | `/sessions` | list or create sessions |
-| GET/DELETE | `/sessions/ID` | show or remove a session |
-| POST | `/sessions/ID/stop|start|snapshot|restore|move` | lifecycle |
-| POST | `/sessions/ID/exec` | run a command in the container |
-| GET | `/sessions/ID/status` | live Docker status |
-| GET | `/s/ID/...` | proxy to a running session |
-
-Worker endpoints mirror the store (`/store/...`) and session lifecycle and
-are normally reached only by the hub.
-
-## Package model
+State is ordinary text:
 
 ```text
-$BEAUT_STORE_DIR/objects/<first2>/<sha256>   chunk objects
-$BEAUT_STORE_DIR/packages/<sha256>.json      manifests
-$BEAUT_STORE_DIR/tmp/                        scratch
+~/.beaut/state/workers.tsv
 ```
 
-A manifest records the whole-file hash, chunk list, size, kind, required copy
-count and the names of nodes that hold a copy. Replication bundles a manifest
-plus its chunks as a gzip tar, posts it to a worker, and the worker verifies
-every chunk and the complete file hash before accepting it. `package scrub`
-re-hashes the local store.
+There is no authentication. Run this on a trusted link or put an
+authenticating reverse proxy in front of the hub.
 
-Package kinds: `data`, `resource`, `oci-image`, `session-image`,
-`session-state`, `web-cache`, `artifact`, `manifest`.
+## Next layers
 
-## Sessions
+The base deliberately stops before packages, routes and sessions. The natural
+next steps, in project order, are:
 
-Each session maps to a container named `beaut-<session-id>` by default (the
-prefix is `BEAUT_SESSION_CONTAINER_PREFIX` in the protected defaults) on one
-worker. The worker records the container metadata in its state directory.
-`session exec` runs a command inside the container through the hub (`POST
-/sessions/ID/exec`) and returns its output plus exit status. `snapshot`
-performs `docker commit` + `docker save`, uploads the image to the hub as a
-`session-image` package, and the hub replicates it. `restore` downloads the
-snapshot and loads it on the target worker, recreating the container if needed.
-Stopping with `BEAUT_SESSION_SNAPSHOT_ON_STOP=1` snapshots first.
-
-This is intentionally a coarse persistence model. Live memory/process state is
-not migrated; the container filesystem is.
-
-## Installation
-
-`beaut install` (also available as `beaut deploy`) handles local and remote
-nodes. The hub destination is the host in `BEAUT_HUB_URL`; each worker
-destination is its host in `BEAUT_WORKERS`. When the destination resolves to
-this machine, the installer runs in place from the checkout through `sudo`.
-Otherwise the source tree is packed, uploaded with SFTP, installed through SSH
-as `beaut@host` using the port and key from `~/.ssh/config`, and the temporary
-files are removed afterwards. Remote passwords are not supported.
-
-On a new node, run the bootstrap script once as root:
-
-```bash
-sudo ./scripts/bootstrap-node.sh
-```
-
-It creates the `beaut` account, authorizes the invoking user's `~/.ssh/*.pub`
-keys, grants passwordless sudo and adds the account to `docker`. It is
-idempotent. Run it on this machine too before a local install. Then install
-from the control machine:
-
-```bash
-# Configure the hub and worker addresses in beaut.conf first.
-$EDITOR beaut.conf
-
-# Remote hub and all configured workers.
-./beaut.sh install hub
-./beaut.sh install all
-
-# One worker by name from BEAUT_WORKERS.
-./beaut.sh install worker w1
-```
-
-The installer writes:
-
-- `/etc/beaut/beaut.conf`, `/var/lib/beaut/{state,store}`, `/var/log/beaut`
-- the runtime tree, including `etc/beaut.defaults.conf`, under
-  `/usr/local/lib/beaut`
-- `beaut-hub.service`, `beaut-worker.service`, `beaut-router.service`
-- `/usr/local/bin/beaut` pointing at the installed tree
-
-Set `BEAUT_INSTALL_DEPS=1` (default) to install `socat jq curl tar gzip` with the
-distribution package manager, and `BEAUT_INSTALL_DOCKER=1` to install Docker on
-worker nodes.
-
-The deployed config is mode 600 and owned by `beaut`. The hub config (worker
-addresses and routes) is uploaded only to the hub; generated worker configs
-contain no SSH or sudo settings. The installer never sets an account password.
-
-## Tests
-
-The integration suite needs `socat`, `jq`, `curl`, `tar`, `nc`-free TCP checks
-(via Bash `/dev/tcp`) and runs entirely in a temporary directory. It uses
-`tests/fake-docker.sh`, so no Docker daemon is required:
-
-```bash
-bash tests/run.sh
-# keep logs and state on failure:
-BEAUT_TEST_KEEP=1 bash tests/run.sh
-```
-
-The suite covers health/info, two-copy package upload and download, CLI
-verify/get/scrub, strict copy enforcement, HTTP route proxying and route find,
-raw TCP routing, session create/proxy/snapshot/restore/stop/start/exec/delete,
-API-first status/workers/package/route reports, help output, and diagnostics.
-
-## V1 limitations
-
-- HTTP routing is request/response (no WebSocket upgrade); use a TCP route for
-  protocols that need a raw stream.
-- The store has no garbage collection or retention policy yet.
-- The hub API has no authentication or TLS; place it behind a trusted network
-  or reverse proxy.
-- Session migration preserves the filesystem image, not live memory.
-- Worker selection is configuration-driven (preferred hub + capacity), not a
-  consensus scheduler.
-- Metrics are exposed as JSON summaries, not Prometheus counters.
+1. content-addressed store under `~/.beaut/store`;
+2. route table mapping public names/paths to worker ports;
+3. Docker sessions executed on workers through the existing tunnel;
+4. snapshots and backup copies on a separate worker.

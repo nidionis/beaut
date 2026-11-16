@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# beaut-tunnel - keep a reverse SSH tunnel to the hub. Takes no arguments.
+set -uo pipefail
+
+. "$(dirname -- "$0")/../lib/bootstrap.sh"
+load_config
+run_tunnel

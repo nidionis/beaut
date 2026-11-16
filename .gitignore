@@ -1,11 +1,10 @@
 # local config (user-edited, do not commit)
 config.env
-beaut.conf
+conf.env
 .env
 
 # local state / scratch
 /state/
-/store/
 *.lock
 *.swp
 *.tmp

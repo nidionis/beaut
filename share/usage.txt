@@ -1,0 +1,16 @@
+beaut - minimal fabric
+
+usage: beaut <command>
+
+  hub serve                  run the hub listener
+  worker serve               run the worker listener
+  worker tunnel              keep a reverse SSH tunnel to the hub
+  relay                      expose the hub through a remote SSH relay
+  service install hub|worker install/restart user systemd units
+  status [--json]            show the hub inventory
+  resources [--raw|--json]   show local resources
+  deploy [hub|workers|all|NAME]
+                             run deploy.sh over existing SSH
+  doctor                     check config and dependencies
+
+configuration: ./conf.env, overridden by ~/.beaut/node.env

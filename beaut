@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# beaut - minimal hub/worker fabric.
+#
+# This CLI is the only place that interprets user arguments. The files under
+# lib/ are sourced function definitions; the files under bin/ are argument-free
+# runtime entrypoints used by systemd and by socat.
+set -uo pipefail
+
+_self="${BASH_SOURCE[0]}"
+_self="$(readlink -f -- "$_self" 2>/dev/null || printf '%s' "$_self")"
+BEAUT_ROOT="$(cd -- "$(dirname -- "$_self")" && pwd)"
+unset _self
+export BEAUT_ROOT
+
+# shellcheck source=lib/bootstrap.sh
+. "$BEAUT_ROOT/lib/bootstrap.sh"
+
+usage() {
+  printf '%s\n' "$(<"$BEAUT_ROOT/share/usage.txt")"
+}
+
+main() {
+  local cmd="${1:-}" mode role
+
+  case "$cmd" in
+    help|-h|--help|"") usage; return 0 ;;
+    version|--version) printf 'beaut v0.1\n'; return 0 ;;
+  esac
+
+  # Long-running roles are dedicated executables. Nothing in lib/ chooses a
+  # role by inspecting an argument.
+  case "$cmd" in
+    hub)
+      shift
+      [[ "${1:-serve}" == serve ]] || die "usage: beaut hub serve"
+      need_exec "$BEAUT_ROOT/bin/beaut-hub"
+      exec "$BEAUT_ROOT/bin/beaut-hub"
+      ;;
+    worker)
+      shift
+      case "${1:-serve}" in
+        serve)
+          need_exec "$BEAUT_ROOT/bin/beaut-worker"
+          exec "$BEAUT_ROOT/bin/beaut-worker"
+          ;;
+        tunnel)
+          need_exec "$BEAUT_ROOT/bin/beaut-tunnel"
+          exec "$BEAUT_ROOT/bin/beaut-tunnel"
+          ;;
+        *) die "usage: beaut worker serve|tunnel" ;;
+      esac
+      ;;
+    relay)
+      need_exec "$BEAUT_ROOT/bin/beaut-relay"
+      exec "$BEAUT_ROOT/bin/beaut-relay"
+      ;;
+  esac
+
+  load_config
+
+  case "$cmd" in
+    service)
+      shift
+      [[ "${1:-install}" == install ]] || die "usage: beaut service install hub|worker"
+      role="${2:-}"
+      case "$role" in
+        hub)
+          service_prepare
+          service_install_hub
+          ;;
+        worker)
+          service_prepare
+          service_install_worker
+          ;;
+        *) die "usage: beaut service install hub|worker" ;;
+      esac
+      ;;
+    status)
+      shift
+      mode="${1:-}"
+      case "$mode" in
+        "") status_table ;;
+        --json) status_body ;;
+        *) die "usage: beaut status [--json]" ;;
+      esac
+      ;;
+    resources)
+      shift
+      mode="${1:-}"
+      case "$mode" in
+        "") resources_human ;;
+        --raw) resources_raw ;;
+        --json) resources_json ;;
+        *) die "usage: beaut resources [--raw|--json]" ;;
+      esac
+      ;;
+    deploy)
+      shift
+      [[ -x "$BEAUT_ROOT/deploy.sh" ]] || die "missing deploy.sh"
+      exec "$BEAUT_ROOT/deploy.sh" "$@"
+      ;;
+    doctor) doctor ;;
+    *) die "unknown command: $cmd (try: beaut help)" ;;
+  esac
+}
+
+main "$@"

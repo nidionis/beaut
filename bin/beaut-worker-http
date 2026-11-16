@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# beaut-worker-http - answer one worker HTTP request. Takes no arguments.
+set -uo pipefail
+
+. "$(dirname -- "$0")/../lib/bootstrap.sh"
+load_config
+handle_worker
