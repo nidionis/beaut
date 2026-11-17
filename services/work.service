@@ -1,0 +1,16 @@
+[Unit]
+Description=beaut work
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory="@APP_DIR@"
+Environment="BEAUT_CONFIG=@CONFIG@"
+Environment="BEAUT_ENV=@NODE_ENV@"
+ExecStart="@APP_DIR@/bin/beaut-work"
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

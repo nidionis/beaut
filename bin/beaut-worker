@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# beaut-worker - run the worker listener. Takes no arguments.
+# beaut-worker - run the worker loop. Takes no arguments.
 set -uo pipefail
 
 . "$(dirname -- "$0")/../lib/bootstrap.sh"
 load_config
-serve_worker
+validate_config
+worker_loop

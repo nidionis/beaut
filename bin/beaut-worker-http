@@ -4,4 +4,5 @@ set -uo pipefail
 
 . "$(dirname -- "$0")/../lib/bootstrap.sh"
 load_config
+validate_config
 handle_worker

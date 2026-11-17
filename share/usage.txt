@@ -1,16 +1,17 @@
-beaut - minimal fabric
+beaut - minimal hub/worker Docker fabric
 
 usage: beaut <command>
 
-  hub serve                  run the hub listener
-  worker serve               run the worker listener
-  worker tunnel              keep a reverse SSH tunnel to the hub
-  relay                      expose the hub through a remote SSH relay
-  service install hub|worker install/restart user systemd units
+  hub serve                  run the hub main listener
+  worker serve               run the worker loop and snapshot receiver
+  run PROJECT_FOLDER         pack a Dockerfile/compose project as a job
+  jobs                       print job state as JSON
   status [--json]            show the hub inventory
   resources [--raw|--json]   show local resources
-  deploy [hub|workers|all|NAME]
-                             run deploy.sh over existing SSH
   doctor                     check config and dependencies
+  deploy hub|worker          install over SSH using conf/conf.env
+  first-conn ROLE TARGET SUDO_USER [PASSWORD]
+                             create accounts, keys and directories on a new node
 
-configuration: ./conf.env, overridden by ~/.beaut/node.env
+configuration: conf/conf.env, then conf/node.env
+runtime entrypoints: bin/beaut-hub, bin/beaut-work, bin/beaut-worker

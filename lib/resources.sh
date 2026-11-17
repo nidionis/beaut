@@ -15,7 +15,7 @@ resources_raw() {
   fi
 
   path="$ROOT"
-  [[ -d "$path" ]] || path="."
+  [[ -d "$path" ]] || path="/"
   disk_total=0
   disk_free=0
   if command -v df >/dev/null 2>&1; then
@@ -29,8 +29,8 @@ resources_raw() {
   fi
   is_uint "$uptime" || uptime=0
 
-  printf 'name=%s\n' "$WORKER_NAME"
-  printf 'host=%s\n' "$WORKER_HOST"
+  printf 'hash=%s\n' "${NODE_HASH:-}"
+  printf 'address=%s\n' "${NODE_ADDRESS:-}"
   printf 'cpus=%s\n' "$cpus"
   printf 'load1=%s\n' "$load"
   printf 'mem_total_kb=%s\n' "${mem_total:-0}"
@@ -41,15 +41,15 @@ resources_raw() {
 }
 
 resources_json() {
-  local key val name="" host="" cpus=0 load=0
-  local mem_total=0 mem_avail=0 disk_total=0 disk_free=0 uptime=0 port
+  local key val hash="" address="" cpus=0 load=0
+  local mem_total=0 mem_avail=0 disk_total=0 disk_free=0 uptime=0
 
   need jq
 
   while IFS='=' read -r key val; do
     case "$key" in
-      name) name="$val" ;;
-      host) host="$val" ;;
+      hash) hash="$val" ;;
+      address) address="$val" ;;
       cpus) cpus="$val" ;;
       load1) load="$val" ;;
       mem_total_kb) mem_total="$val" ;;
@@ -67,13 +67,10 @@ resources_json() {
   is_uint "$disk_total" || disk_total=0
   is_uint "$disk_free" || disk_free=0
   is_uint "$uptime" || uptime=0
-  port="$WORKER_PORT"
-  is_uint "$port" || port=8090
 
   jq -cn \
-    --arg name "$name" \
-    --arg host "$host" \
-    --argjson port "$port" \
+    --arg hash "$hash" \
+    --arg address "$address" \
     --argjson cpus "$cpus" \
     --argjson load "$load" \
     --argjson mem_total_kb "$mem_total" \
@@ -81,7 +78,7 @@ resources_json() {
     --argjson disk_total_kb "$disk_total" \
     --argjson disk_free_kb "$disk_free" \
     --argjson uptime_s "$uptime" \
-    '{name:$name,host:$host,port:$port,cpus:$cpus,load:$load,
+    '{hash:$hash,address:$address,cpus:$cpus,load1:$load,
       mem_total_kb:$mem_total_kb,mem_available_kb:$mem_available_kb,
       disk_total_kb:$disk_total_kb,disk_free_kb:$disk_free_kb,
       uptime_s:$uptime_s}'
@@ -89,6 +86,27 @@ resources_json() {
 
 resources_human() {
   need awk
-  [[ -f "$BEAUT_ROOT/share/awk/resources.awk" ]] || die "missing share/awk/resources.awk"
   resources_raw | awk -f "$BEAUT_ROOT/share/awk/resources.awk"
+}
+
+# packages_raw - installed package inventory. Debian is the automated target;
+# Fedora nodes still report their package list.
+packages_raw() {
+  if command -v dpkg-query >/dev/null 2>&1; then
+    dpkg-query -W -f='${Package}=${Version}\n' 2>/dev/null
+  elif command -v rpm >/dev/null 2>&1; then
+    rpm -qa --qf '%{NAME}=%{VERSION}-%{RELEASE}\n' 2>/dev/null
+  fi
+}
+
+packages_json() {
+  local line first=yes
+  printf '['
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    [[ "$first" == yes ]] || printf ','
+    first=no
+    printf '"%s"' "$(json_escape "$line")"
+  done < <(packages_raw)
+  printf ']'
 }

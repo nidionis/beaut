@@ -5,10 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=@WORKDIR@
-Environment=BEAUT_CONFIG=@CONFIG@
-Environment=BEAUT_ENV=@ENVFILE@
-ExecStart=@BIN@
+WorkingDirectory="@APP_DIR@"
+Environment="BEAUT_CONFIG=@CONFIG@"
+Environment="BEAUT_ENV=@NODE_ENV@"
+ExecStart="@APP_DIR@/bin/beaut-hub"
 Restart=always
 RestartSec=2
 

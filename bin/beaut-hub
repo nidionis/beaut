@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# beaut-hub - run the hub listener. Takes no arguments.
+# beaut-hub - run the main hub listener. Takes no arguments.
 set -uo pipefail
 
 . "$(dirname -- "$0")/../lib/bootstrap.sh"
 load_config
+validate_config
 serve_hub

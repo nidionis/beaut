@@ -1,3 +1,13 @@
-# status.awk - align the TSV emitted by share/jq/status-table.jq.
-NF == 7 { printf "%-6s %-7s %-5s %-4s %-5s %-13s %-13s\n", $1, $2, $3, $4, $5, $6, $7; next }
+# status.awk - align the worker table. Fields:
+# address hash state cpus ram disk load jobs
+BEGIN {
+  FS = "\t"
+  printf "%-16s %-16s %-8s %5s %12s %12s %7s %5s\n",
+    "address", "hash", "state", "cpu", "ram KiB", "disk KiB", "load", "jobs"
+}
+NF >= 8 {
+  printf "%-16s %-16s %-8s %5s %12s %12s %7s %5s\n",
+    $1, $2, $3, $4, $5, $6, $7, $8
+  next
+}
 { print }

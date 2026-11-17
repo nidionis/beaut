@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-# beaut-relay - expose the hub through a remote SSH relay. Takes no arguments.
-set -uo pipefail
-
-. "$(dirname -- "$0")/../lib/bootstrap.sh"
-load_config
-run_relay

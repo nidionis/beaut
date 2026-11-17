@@ -23,3 +23,14 @@ boinc/
 tags
 .junie/
 context/
+
+# new runtime/config layout
+/conf/conf.env
+/conf/node.env
+/conf/keys/
+/conf/workers/
+/state/
+/logs/
+/snapshots/
+/repos/
+/tests/.build/
