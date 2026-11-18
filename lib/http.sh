@@ -83,6 +83,13 @@ http_cleanup() {
   HTTP_BODY_FILE=""
 }
 
+# http_dispatch HANDLER - accept one request, run HANDLER, then clean up.
+http_dispatch() {
+  http_accept || { http_cleanup; return; }
+  "$@"
+  http_cleanup
+}
+
 http_respond() {
   local status="$1" type="$2" body="${3-}" length
   local LC_ALL=C

@@ -298,17 +298,15 @@ hub_container() {
   http_send_file "$file" "application/gzip"
 }
 
-handle_hub() {
-  http_accept || { http_cleanup; return; }
+hub_route() {
   case "$HTTP_PATH" in
-    /health) hub_health ;;
-    /status) http_json "200 OK" "$(hub_status)" ;;
-    /report) hub_report ;;
-    /heartbeat) hub_heartbeat ;;
     /container/*) hub_container ;;
     *) serve_site "$HTTP_PATH" ;;
   esac
-  http_cleanup
+}
+
+handle_hub() {
+  http_dispatch hub_route
 }
 
 serve_hub() {
@@ -316,13 +314,15 @@ serve_hub() {
   http_listen hub "$PORT" "$HUB_BIND" beaut-hub-http
 }
 
-handle_work() {
-  http_accept || { http_cleanup; return; }
+work_route() {
   case "$HTTP_PATH" in
     /health) hub_health ;;
     *) serve_work "$HTTP_PATH" ;;
   esac
-  http_cleanup
+}
+
+handle_work() {
+  http_dispatch work_route
 }
 
 serve_work_port() {

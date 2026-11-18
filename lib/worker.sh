@@ -202,9 +202,7 @@ worker_snapshot_http() {
   http_send_file "$file" "application/gzip"
 }
 
-handle_worker() {
-  worker_identity
-  http_accept || { http_cleanup; return; }
+worker_route() {
   case "$HTTP_PATH" in
     /health) http_respond "200 OK" "text/plain" $'ok\n' ;;
     /snapshot) worker_snapshot_receive ;;
@@ -217,7 +215,11 @@ handle_worker() {
       ;;
     *) http_not_found ;;
   esac
-  http_cleanup
+}
+
+handle_worker() {
+  worker_identity
+  http_dispatch worker_route
 }
 
 serve_worker() {
