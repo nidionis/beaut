@@ -81,20 +81,15 @@ validate_config() {
   is_uint "$RETAIN_SNAPSHOTS" || die "invalid RETAIN_SNAPSHOTS: $RETAIN_SNAPSHOTS"
   (( RETAIN_SNAPSHOTS >= 1 )) || die "RETAIN_SNAPSHOTS must be at least 1"
   is_uint "$HTTP_MAX_BODY" || die "invalid HTTP_MAX_BODY: $HTTP_MAX_BODY"
-  case "$NODE_ROLE" in
-    hub|worker) ;;
-    *) die "invalid NODE_ROLE: $NODE_ROLE" ;;
-  esac
+  is_role "$NODE_ROLE" || die "invalid NODE_ROLE: $NODE_ROLE"
   if [[ "$NODE_ROLE" == worker ]]; then
     [[ -n "$NODE_ADDRESS" ]] || die "NODE_ADDRESS is empty (set the worker's explicit address)"
-    case "$NODE_ADDRESS" in
-      localhost|127.*|::1|"[::1]") die "NODE_ADDRESS must be an explicit non-loopback address" ;;
-    esac
+    is_explicit_address "$NODE_ADDRESS" ||
+      die "NODE_ADDRESS must be an explicit non-loopback address"
   fi
   [[ -n "$HUB" ]] || die "HUB is empty"
-  case "$HUB" in
-    localhost|127.*|::1|"[::1]") die "HUB must be an explicit non-loopback address" ;;
-  esac
+  is_explicit_address "$HUB" ||
+    die "HUB must be an explicit non-loopback address"
   [[ -n "$ROOT" ]] || die "ROOT is empty"
   (( ${#SCHEDULING_PRIO[@]} > 0 )) || die "SCHEDULING_PRIO is empty"
 

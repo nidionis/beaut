@@ -30,10 +30,10 @@ usage_error() {
   exit 2
 }
 
-case "$TEST_ADDRESS" in
-  "") usage_error "set TEST_ADDRESS to the machine's explicit address" ;;
-  localhost|127.*|::1|"[::1]") usage_error "TEST_ADDRESS must not be loopback" ;;
-esac
+[[ -n "$TEST_ADDRESS" ]] ||
+  usage_error "set TEST_ADDRESS to the machine's explicit address"
+is_explicit_address "$TEST_ADDRESS" ||
+  usage_error "TEST_ADDRESS must not be loopback"
 
 for cmd in curl jq socat tar ssh-keygen "${DOCKER_CMD%% *}"; do
   command -v "$cmd" >/dev/null 2>&1 || usage_error "missing dependency: $cmd"

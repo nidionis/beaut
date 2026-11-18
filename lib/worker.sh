@@ -31,9 +31,7 @@ worker_jobs_json() {
     job="${job%.*}"
     [[ "$state" == running && -f "$STATE_DIR/marks/$job.done" ]] && continue
     archive="$(cat -- "$file" 2>/dev/null || true)"
-    if ! is_hex "$archive" || [[ ${#archive} -ne 16 ]]; then
-      archive=""
-    fi
+    is_hash "$archive" || archive=""
     [[ "$first" == yes ]] || printf ','
     first=no
     jq -cn --arg id "$job" --arg state "$state" --arg archive "$archive" \
@@ -169,11 +167,11 @@ worker_snapshot_receive() {
   local hash job stamp dir dest
   hash="$(http_param hash || true)"
   job="$(http_param job || true)"
-  hub_hash_valid "$hash" || {
+  is_hash "$hash" || {
     http_respond "400 Bad Request" "text/plain" $'invalid sender hash\n'
     return
   }
-  hub_hash_valid "$job" || {
+  is_hash "$job" || {
     http_respond "400 Bad Request" "text/plain" $'invalid job id\n'
     return
   }
@@ -196,7 +194,7 @@ worker_snapshot_receive() {
 worker_snapshot_http() {
   local job file
   job="$(http_query_get job || true)"
-  hub_hash_valid "$job" || { http_not_found; return; }
+  is_hash "$job" || { http_not_found; return; }
   file="$(worker_snapshot_latest "$job" 2>/dev/null || true)"
   [[ -n "$file" ]] || { http_not_found; return; }
   http_send_file "$file" "application/gzip"

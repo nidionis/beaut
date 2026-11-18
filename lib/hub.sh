@@ -1,7 +1,5 @@
 # hub.sh - the hub: status, worker reports, work scripts and container files.
 
-hub_hash_valid() { is_hex "${1:-}" && [[ ${#1} -eq 16 ]]; }
-
 # hub_ranked_workers - online workers above the minimums, in SCHEDULING_PRIO
 # order. Higher free resources first; load1 is the lazy tie-break.
 hub_ranked_workers() {
@@ -169,7 +167,7 @@ hub_job_script() {
 hub_work() {
   local hash job script=""
   hash="$(http_query_get hash || true)"
-  hub_hash_valid "$hash" || {
+  is_hash "$hash" || {
     http_respond "200 OK" "text/x-shellscript" $':\n'
     return
   }
@@ -203,7 +201,7 @@ hub_report() {
   }
 
   hash="$(jq -r '.hash // empty' "$file")"
-  hub_hash_valid "$hash" || {
+  is_hash "$hash" || {
     http_respond "400 Bad Request" "text/plain" $'invalid worker hash\n'
     return
   }
@@ -215,7 +213,7 @@ hub_report() {
   ' "$file" | state_worker_save "$hash"
 
   while IFS=$'\t' read -r job_id job_state report_archive; do
-    hub_hash_valid "$job_id" || continue
+    is_hash "$job_id" || continue
     job_exists "$job_id" || continue
     job_primary="$(job_load "$job_id" | jq -r '.primary // empty')"
     [[ -z "$job_primary" || "$job_primary" == "$hash" ]] || continue
@@ -234,7 +232,7 @@ hub_report() {
   done < <(jq -r '.jobs[]? | [(.id // ""), (.state // "running"), (.archive // "")] | @tsv' "$file")
 
   while IFS=$'\t' read -r snap_id snap_path snap_time; do
-    hub_hash_valid "$snap_id" || continue
+    is_hash "$snap_id" || continue
     job_exists "$snap_id" || continue
     job_backup="$(job_load "$snap_id" | jq -r '.backup // empty')"
     job_snapshot_worker="$(job_load "$snap_id" | jq -r '.snapshot.worker // empty')"
@@ -260,7 +258,7 @@ hub_heartbeat() {
   hash="$(http_param hash || true)"
   address="$(http_param address || true)"
   port="$(http_param port || true)"
-  hub_hash_valid "$hash" || {
+  is_hash "$hash" || {
     http_respond "400 Bad Request" "text/plain" $'invalid worker hash\n'
     return
   }
@@ -290,7 +288,7 @@ hub_container() {
   name="${name%.tar.gz}"
   [[ "$name" != */* && -n "$name" ]] || { http_not_found; return; }
   archive="$name"
-  if [[ ! -f "$CONTAINER_DIR/$archive.tar.gz" ]] && hub_hash_valid "$name" && job_exists "$name"; then
+  if [[ ! -f "$CONTAINER_DIR/$archive.tar.gz" ]] && is_hash "$name" && job_exists "$name"; then
     archive="$(job_get "$name" archive || true)"
   fi
   file="$CONTAINER_DIR/$archive.tar.gz"

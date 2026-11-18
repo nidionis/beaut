@@ -78,11 +78,9 @@ main() {
     deploy)
       shift
       target="${1:-}"
-      case "$target" in
-        hub) exec "$BEAUT_ROOT/bin/deploy-hub.sh" ;;
-        worker) exec "$BEAUT_ROOT/bin/deploy-worker.sh" ;;
-        *) die "usage: beaut deploy hub|worker" ;;
-      esac
+      is_role "$target" || die "usage: beaut deploy hub|worker"
+      need_exec "$BEAUT_ROOT/bin/deploy-$target.sh"
+      exec "$BEAUT_ROOT/bin/deploy-$target.sh"
       ;;
     first-conn)
       shift

@@ -15,6 +15,20 @@ is_num() { [[ ${1:-} =~ ^[0-9]+([.][0-9]+)?$ ]]; }
 is_hex() { [[ ${1:-} =~ ^[0-9a-f]+$ ]]; }
 is_true() { case "${1:-}" in 1|yes|true|on) return 0 ;; *) return 1 ;; esac; }
 
+# is_hash VALUE - true for a 16-character lowercase hex content hash.
+is_hash() { is_hex "${1:-}" && [[ ${#1} -eq 16 ]]; }
+
+# is_role ROLE - true for the two node roles.
+is_role() { case "${1:-}" in hub|worker) return 0 ;; *) return 1 ;; esac; }
+
+# is_explicit_address ADDRESS - true for a non-empty, non-loopback address.
+is_explicit_address() {
+  case "${1:-}" in
+    ""|localhost|127.*|::1|"[::1]") return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 # now_epoch - print the current Unix time in seconds.
 now_epoch() { printf '%(%s)T\n' -1; }
 
@@ -128,6 +142,16 @@ ensure_dir() {
   local dir="$1" mode="${2:-}"
   [[ -d "$dir" ]] || mkdir -p -- "$dir" || die "cannot create directory: $dir"
   [[ -n "$mode" ]] && chmod "$mode" -- "$dir"
+}
+
+# ensure_key FILE - create an ed25519 key if FILE is missing.
+ensure_key() {
+  local key="$1"
+  ensure_dir "$(dirname -- "$key")" 700
+  [[ -f "$key" ]] && return 0
+  need ssh-keygen
+  ssh-keygen -q -t ed25519 -N '' -f "$key" </dev/null ||
+    die "cannot create key: $key"
 }
 
 # atomic_write FILE - replace FILE with standard input without partial reads.

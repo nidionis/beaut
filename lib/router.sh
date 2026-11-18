@@ -40,7 +40,7 @@ work_file() {
       ;;
     work/*)
       hash="${path#work/}"
-      is_hex "$hash" && [[ ${#hash} -eq 16 ]] || return 1
+      is_hash "$hash" || return 1
       file="$WORK_DIR/$hash/script.sh"
       ;;
     *)

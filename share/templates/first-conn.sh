@@ -19,11 +19,26 @@ add_user() {
   fi
 }
 
+user_home() {
+  local user="$1" line
+  local -a fields
+  line="$(getent passwd "$user")" || return 1
+  IFS=: read -r -a fields <<<"$line"
+  [[ -n "${fields[5]:-}" ]] || return 1
+  printf '%s\n' "${fields[5]}"
+}
+
+add_to_group() {
+  local user="$1" group="$2"
+  getent group "$group" >/dev/null 2>&1 || return 1
+  usermod -aG "$group" "$user"
+}
+
 add_user "$admin"
 add_user "$worker"
 
 if [[ -z "$root" ]]; then
-  admin_home="$(getent passwd "$admin" | cut -d: -f6)"
+  admin_home="$(user_home "$admin" || true)"
   [[ -n "$admin_home" ]] || {
     printf 'first-conn: cannot determine the home directory of %s\n' "$admin" >&2
     exit 1
@@ -35,25 +50,32 @@ fi
   exit 1
 }
 
-if getent group sudo >/dev/null 2>&1; then
-  usermod -aG sudo "$admin"
-elif getent group wheel >/dev/null 2>&1; then
-  usermod -aG wheel "$admin"
-fi
-if getent group docker >/dev/null 2>&1; then
-  usermod -aG docker "$admin"
-  usermod -aG docker "$worker"
-fi
+add_to_group "$admin" sudo || add_to_group "$admin" wheel || true
+add_to_group "$admin" docker || true
+add_to_group "$worker" docker || true
+
+key_exists() {
+  local file="$1" line
+  [[ -f "$file" ]] || return 1
+  while IFS= read -r line; do
+    [[ "$line" == "$pubkey" ]] && return 0
+  done <"$file"
+  return 1
+}
 
 install_key() {
   local user="$1" home keyfile
-  home="$(getent passwd "$user" | cut -d: -f6)"
+  home="$(user_home "$user" || true)"
+  [[ -n "$home" ]] || {
+    printf 'first-conn: cannot determine the home directory of %s\n' "$user" >&2
+    exit 1
+  }
   install -d -m 700 -o "$user" -g "$user" "$home/.ssh"
   keyfile="$home/.ssh/authorized_keys"
   touch "$keyfile"
   chown "$user:$user" "$keyfile"
   chmod 600 "$keyfile"
-  if ! grep -qxF "$pubkey" "$keyfile"; then
+  if ! key_exists "$keyfile"; then
     printf '%s\n' "$pubkey" >>"$keyfile"
   fi
 }
@@ -93,4 +115,4 @@ if ! command -v socat >/dev/null 2>&1; then
   printf 'first-conn: warning: socat is not installed\n' >&2
 fi
 
-printf 'first-conn: users and directories ready on %s\n' "$(hostname)"
+printf 'first-conn: users and directories ready on %s\n' "${HOSTNAME:-$(hostname)}"

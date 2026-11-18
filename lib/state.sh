@@ -31,7 +31,7 @@ state_heartbeat_epoch() {
 
 state_worker_save() {
   local hash="$1" file
-  is_hex "$hash" && [[ ${#hash} -eq 16 ]] || return 1
+  is_hash "$hash" || return 1
   file="$(state_worker_file "$hash")"
   atomic_write "$file"
 }
@@ -119,6 +119,6 @@ job_list() {
 }
 
 job_exists() {
-  is_hex "${1:-}" && [[ ${#1} -eq 16 ]] || return 1
+  is_hash "${1:-}" || return 1
   [[ -f "$(state_job_file "$1")" ]]
 }

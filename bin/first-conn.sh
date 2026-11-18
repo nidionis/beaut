@@ -10,69 +10,37 @@ ROLE="${1:-}"
 TARGET="${2:-}"
 SUDO_USER="${3:-}"
 PASSWORD="${4:-}"
-[[ $# -ge 3 && $# -le 4 ]] ||
-  {
-    printf 'usage: first-conn.sh ROLE TARGET SUDO_USER [PASSWORD]\n' >&2
-    exit 2
-  }
-case "$ROLE" in
-  hub|worker) ;;
-  *)
-    printf 'first-conn: ROLE must be hub or worker\n' >&2
-    exit 2
-    ;;
-esac
-case "$TARGET" in
-  ""|localhost|127.*|::1|"[::1]")
-    printf 'first-conn: TARGET must be an explicit non-loopback address\n' >&2
-    exit 2
-    ;;
-esac
-[[ -n "$SUDO_USER" ]] || {
-  printf 'first-conn: SUDO_USER is empty\n' >&2
-  exit 2
-}
 
 . "$(dirname -- "$0")/../lib/bootstrap.sh"
 . "$(dirname -- "$0")/../lib/deploy.sh"
+
+usage() {
+  printf 'usage: first-conn.sh ROLE TARGET SUDO_USER [PASSWORD]\n' >&2
+  exit 2
+}
+
+usage_error() {
+  printf 'first-conn: %s\n' "$*" >&2
+  exit 2
+}
+
+[[ $# -ge 3 && $# -le 4 ]] || usage
+is_role "$ROLE" || usage_error 'ROLE must be hub or worker'
+is_explicit_address "$TARGET" ||
+  usage_error 'TARGET must be an explicit non-loopback address'
+[[ -n "$SUDO_USER" ]] || usage_error 'SUDO_USER is empty'
+
 load_config
 validate_config
 need ssh
-need ssh-keygen
 need tar
 [[ -n "$PASSWORD" ]] && need sshpass
 
-ensure_dir "$KEYS_DIR" 700
-if [[ ! -f "$NODE_KEY" ]]; then
-  ssh-keygen -q -t ed25519 -N '' -f "$NODE_KEY" </dev/null ||
-    die "cannot create installer key: $NODE_KEY"
-fi
+ensure_key "$NODE_KEY"
 PUBLIC_KEY="$(<"$NODE_KEY.pub")"
 
 first_conn_ssh() {
-  local -a opts filtered
-  local i=0
-  read -r -a opts <<<"$SSH_OPTS"
-  while (( i < ${#opts[@]} )); do
-    if [[ "${opts[i]}" == -o && "${opts[i + 1]:-}" == BatchMode=yes ]]; then
-      i=$((i + 2))
-      continue
-    fi
-    if [[ "${opts[i]}" == BatchMode=yes ]]; then
-      i=$((i + 1))
-      continue
-    fi
-    filtered+=("${opts[i]}")
-    i=$((i + 1))
-  done
-  if [[ -f "$NODE_KEY" ]]; then
-    filtered+=(-i "$NODE_KEY")
-  fi
-  if [[ -n "$PASSWORD" ]]; then
-    SSHPASS="$PASSWORD" sshpass -e ssh "${filtered[@]}" "$SUDO_USER@$TARGET" "$@"
-  else
-    ssh "${filtered[@]}" "$SUDO_USER@$TARGET" "$@"
-  fi
+  deploy_first_ssh "$SUDO_USER" "$TARGET" "$PASSWORD" "$@"
 }
 
 first_conn_ssh 'id -un' >/dev/null || die "cannot log in to $SUDO_USER@$TARGET"
@@ -105,10 +73,8 @@ admin_target="$ADMIN_USER@$TARGET"
 deploy_remote_paths "$admin_target"
 deploy_sync_tree "$admin_target"
 deploy_write_config "$admin_target"
-case "$ROLE" in
-  hub) address="$HUB" ;;
-  worker) address="${WORKER_ADDRESS:-$TARGET}" ;;
-esac
+address="$(deploy_role_address "$ROLE" "$TARGET")" ||
+  die "unknown deploy role: $ROLE"
 deploy_write_node "$ROLE" "$address" "$admin_target"
 
 printf 'first-conn: %s ready at %s\n' "$ROLE" "$TARGET"

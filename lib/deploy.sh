@@ -5,13 +5,64 @@
 
 deploy_quote() { printf '%q' "$1"; }
 
+# deploy_ssh_opts [first] - set DEPLOY_SSH_OPTS from SSH_OPTS and the node key.
+# "first" drops BatchMode=yes so the first connection can use a password.
+deploy_ssh_opts() {
+  local mode="${1:-}" i=0
+  local -a opts filtered
+  read -r -a opts <<<"$SSH_OPTS"
+
+  if [[ "$mode" == first ]]; then
+    while (( i < ${#opts[@]} )); do
+      if [[ "${opts[i]}" == -o && "${opts[i + 1]:-}" == BatchMode=yes ]]; then
+        i=$((i + 2))
+        continue
+      fi
+      if [[ "${opts[i]}" == BatchMode=yes ]]; then
+        i=$((i + 1))
+        continue
+      fi
+      filtered+=("${opts[i]}")
+      i=$((i + 1))
+    done
+  else
+    filtered=("${opts[@]}")
+  fi
+
+  [[ -f "$NODE_KEY" ]] && filtered+=(-i "$NODE_KEY")
+  DEPLOY_SSH_OPTS=("${filtered[@]}")
+}
+
 deploy_ssh() {
   local target="$1"
   shift
-  local -a opts=()
-  read -r -a opts <<<"$SSH_OPTS"
-  [[ -f "$NODE_KEY" ]] && opts+=(-i "$NODE_KEY")
-  ssh "${opts[@]}" "$target" "$@"
+  deploy_ssh_opts
+  ssh "${DEPLOY_SSH_OPTS[@]}" "$target" "$@"
+}
+
+# deploy_first_ssh USER TARGET PASSWORD COMMAND... - connect before the node key
+# is trusted. PASSWORD, when set, is passed to sshpass through the environment.
+deploy_first_ssh() {
+  local user="$1" target="$2" password="$3"
+  shift 3
+  deploy_ssh_opts first
+  if [[ -n "$password" ]]; then
+    SSHPASS="$password" sshpass -e ssh "${DEPLOY_SSH_OPTS[@]}" "$user@$target" "$@"
+  else
+    ssh "${DEPLOY_SSH_OPTS[@]}" "$user@$target" "$@"
+  fi
+}
+
+# deploy_role_address ROLE [WORKER_FALLBACK] - print the explicit address used
+# for ROLE. An empty result means the caller must explain what is missing.
+deploy_role_address() {
+  local role="$1" fallback="${2:-}"
+  is_role "$role" || return 1
+  if [[ "$role" == hub ]]; then
+    printf '%s\n' "$HUB"
+  else
+    printf '%s\n' "${WORKER_ADDRESS:-$fallback}"
+  fi
 }
 
 deploy_hub_target() {
@@ -139,20 +190,17 @@ deploy_restart() {
 
 deploy_node() {
   local role="$1" target address
-  case "$role" in
-    hub)
-      target="$(deploy_hub_target)"
-      address="$HUB"
-      ;;
-    worker)
-      target="$(deploy_worker_target)"
-      address="$WORKER_ADDRESS"
-      [[ -n "$address" ]] || die "WORKER_ADDRESS is empty (set the worker's explicit address)"
-      ;;
-    *)
-      die "unknown deploy role: $role"
-      ;;
-  esac
+  is_role "$role" || die "unknown deploy role: $role"
+
+  if [[ "$role" == hub ]]; then
+    target="$(deploy_hub_target)"
+  else
+    target="$(deploy_worker_target)"
+  fi
+  address="$(deploy_role_address "$role")"
+  if [[ "$role" == worker && -z "$address" ]]; then
+    die "WORKER_ADDRESS is empty (set the worker's explicit address)"
+  fi
 
   [[ -f "$BEAUT_CONFIG" ]] || die "missing config: $BEAUT_CONFIG"
   deploy_remote_paths "$target"
